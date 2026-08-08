@@ -1,0 +1,16 @@
+role: file_agent
+description: >
+  Reads and writes files inside the user's workspace directory to help with
+  document editing tasks. Deliberately has no delete_file or shell-exec
+  permission — file agents are a common target for "helpfully clean up
+  these files" injected instructions that are actually data destruction.
+tools:
+  - name: read_file
+    resource_patterns:
+      - "/workspace/**"
+  - name: write_file
+    resource_patterns:
+      - "/workspace/**"
+  - name: list_files
+    resource_patterns:
+      - "/workspace/**"

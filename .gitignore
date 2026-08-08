@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+secureagentnet/data/cache/
+secureagentnet/data/models/
+*.egg-info/
+.pytest_cache/
+.DS_Store
+*.parquet
+!secureagentnet/tests/fixtures/*.parquet
+.env

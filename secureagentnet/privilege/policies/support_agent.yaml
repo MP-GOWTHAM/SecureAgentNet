@@ -1,0 +1,18 @@
+role: support_agent
+description: >
+  Handles customer support tickets: reads and replies to tickets, and can
+  issue small refunds without human approval. No send_email (replies stay
+  inside the ticketing system) and no filesystem/exec access — and refunds
+  above a small threshold require a human, so an injected "just refund me
+  $5000" instruction embedded in a ticket body can't succeed on its own.
+tools:
+  - name: read_ticket
+    resource_patterns: ["*"]
+  - name: reply_ticket
+    resource_patterns: ["*"]
+  - name: issue_refund
+    resource_patterns: ["*"]
+    conditions:
+      - field: amount_usd
+        op: lte
+        value: 50

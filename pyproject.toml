@@ -1,0 +1,9 @@
+[project]
+name = "secureagentnet"
+version = "0.1.0"
+description = "Runtime defense framework for tool-integrated LLM agents: prompt injection detection + privilege governance"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["secureagentnet/tests"]
+pythonpath = ["."]

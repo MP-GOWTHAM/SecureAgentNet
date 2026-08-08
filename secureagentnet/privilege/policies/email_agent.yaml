@@ -1,0 +1,24 @@
+role: email_agent
+description: >
+  Drafts and sends email on the user's behalf, and can read the inbox to
+  answer questions. Cannot touch the filesystem or run code — a compromised
+  instruction should not be able to pivot from "send an email" into
+  arbitrary file or shell access.
+tools:
+  - name: send_email
+    # Only allowed to send to the user's own organization; blocks a
+    # prompt-injected instruction from exfiltrating data to an external
+    # address via a plausible-looking "forward this to..." request.
+    resource_patterns:
+      - "*@secureagentnet-corp.com"
+    # ABAC attribute condition beyond the resource glob: caps recipients
+    # per call, so an injected "BCC these 200 addresses" instruction is
+    # denied even though every individual address is in-domain.
+    conditions:
+      - field: recipient_count
+        op: lte
+        value: 5
+  - name: read_inbox
+    resource_patterns: ["*"]
+  - name: search_email
+    resource_patterns: ["*"]

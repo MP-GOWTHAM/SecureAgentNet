@@ -1,0 +1,22 @@
+role: calendar_agent
+description: >
+  Manages the user's calendar — creating, listing, and cancelling events.
+  No email/file/exec access, so an injected "and also email everyone the
+  attendee list" instruction has nowhere to go.
+tools:
+  - name: create_event
+    resource_patterns: ["*"]
+    # Blocks an injected "invite my whole company" / mass-invite pattern
+    # that turns a calendar tool into a spam/enumeration vector.
+    conditions:
+      - field: attendee_count
+        op: lte
+        value: 10
+  - name: list_events
+    resource_patterns: ["*"]
+  - name: cancel_event
+    # Only events the agent itself created may be cancelled — not
+    # arbitrary event ids an injected instruction might supply to disrupt
+    # someone else's meetings.
+    resource_patterns:
+      - "self-created:*"

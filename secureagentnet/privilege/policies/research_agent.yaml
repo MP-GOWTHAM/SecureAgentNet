@@ -1,0 +1,17 @@
+role: research_agent
+description: >
+  Browses and summarizes web content to answer research questions. This is
+  the role most directly exposed to indirect prompt injection, since
+  fetched page content is untrusted by construction — its tool scope is
+  read-only web access plus note-taking, nothing that acts on the user's
+  accounts or filesystem.
+tools:
+  - name: fetch_url
+    resource_patterns:
+      - "https://*"
+      - "http://*"
+  - name: web_search
+    resource_patterns: ["*"]
+  - name: save_note
+    resource_patterns:
+      - "/workspace/notes/**"

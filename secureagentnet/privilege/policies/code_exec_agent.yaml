@@ -1,0 +1,21 @@
+role: code_exec_agent
+description: >
+  Runs short code snippets in a sandbox to help answer computational
+  questions. No filesystem access outside the sandbox and no network tool
+  at all — this role is the highest-value target for injected instructions
+  ("run this script that curls attacker.com"), so its scope is deliberately
+  the tightest of any role here.
+tools:
+  - name: run_code
+    resource_patterns:
+      - "/sandbox/**"
+    # Caps wall-clock time so an injected instruction can't turn a
+    # snippet-execution tool into a resource-exhaustion / cryptomining
+    # vector via an unbounded loop.
+    conditions:
+      - field: timeout_seconds
+        op: lte
+        value: 30
+  - name: list_sandbox_files
+    resource_patterns:
+      - "/sandbox/**"
