@@ -264,6 +264,50 @@ def run_red_team_round(
     )
 
 
+@dataclass
+class StoppingCondition:
+    """Explicit stopping condition for the red-team loop (methodology
+    §5.6), one of three modes:
+
+    - "fixed_rounds": stop after `max_rounds` rounds — the loop's old
+      implicit behavior (a plain `for i in range(n_rounds)`), now made an
+      explicit, inspectable policy rather than just a loop bound.
+    - "evasion_rate_threshold": stop once evasion rate stays below
+      `evasion_rate_threshold` for `consecutive_rounds_required` rounds in
+      a row — "the defense has converged, further rounds aren't finding
+      much" per the doc's own framing.
+    - "eval_window": stop after `max_seconds` of wall-clock time, for
+      bounding a run against a fixed evaluation budget regardless of how
+      many rounds that allows.
+
+    `max_rounds` is enforced as a hard safety cap under every mode (not
+    just "fixed_rounds") — an evasion-rate or time-based condition that
+    never trips for some reason (e.g. a generator that always returns
+    exactly the same easily-caught text) must not spin forever.
+    """
+
+    mode: str = "fixed_rounds"
+    max_rounds: int = 10
+    evasion_rate_threshold: float = 0.10
+    consecutive_rounds_required: int = 2
+    max_seconds: float = 600.0
+
+    def should_stop(self, results: list["RoundResult"], elapsed_seconds: float) -> bool:
+        if len(results) >= self.max_rounds:
+            return True  # hard safety cap, applies under every mode
+
+        if self.mode == "fixed_rounds":
+            return False  # cap above already covers this mode's own condition
+        if self.mode == "evasion_rate_threshold":
+            if len(results) < self.consecutive_rounds_required:
+                return False
+            recent = results[-self.consecutive_rounds_required:]
+            return all(r.evasion_rate < self.evasion_rate_threshold for r in recent)
+        if self.mode == "eval_window":
+            return elapsed_seconds >= self.max_seconds
+        raise ValueError(f"unknown stopping mode: {self.mode!r}")
+
+
 def run_red_team_loop(
     original_attack: str,
     generator: AttackGenerator,
@@ -273,10 +317,23 @@ def run_red_team_loop(
     calibration,
     n_rounds: int = 5,
     n_variants_per_round: int = 10,
+    stopping_condition: "StoppingCondition | None" = None,
 ) -> list[RoundResult]:
+    """`stopping_condition` overrides `n_rounds` when given — pass a
+    `StoppingCondition(mode="fixed_rounds", max_rounds=n_rounds)` to make
+    the old fixed-count behavior explicit, or one of the other two modes
+    for evasion-rate- or time-based early stopping.
+    """
+    import time as _time
+
+    if stopping_condition is None:
+        stopping_condition = StoppingCondition(mode="fixed_rounds", max_rounds=n_rounds)
+
     results = []
     few_shot: list[str] = []
-    for i in range(n_rounds):
+    start_time = _time.perf_counter()
+    i = 0
+    while not stopping_condition.should_stop(results, _time.perf_counter() - start_time):
         result = run_red_team_round(
             round_index=i, original_attack=original_attack, few_shot_evasions=few_shot,
             generator=generator, score_fn=score_fn, embed_fn=embed_fn,
@@ -288,4 +345,5 @@ def run_red_team_loop(
             "round %d: generated=%d screened_out=%d caught=%d evaded=%d evasion_rate=%.2f",
             i, result.n_generated, result.n_screened_out, result.n_caught, result.n_evaded, result.evasion_rate,
         )
+        i += 1
     return results
