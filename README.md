@@ -256,13 +256,17 @@ modes (`fixed_rounds`, `evasion_rate_threshold` with a configurable
 consecutive-rounds requirement, `eval_window`), with a hard `max_rounds`
 safety cap under every mode.
 
-`simulate/digital_twin.py` now covers all six roles' tools, including two
-**stateful cross-call checks** the privilege layer's per-call ABAC
-conditions genuinely can't express: `CodeExecTwin` catches cumulative CPU
-time across a session exceeding a cap even when each individual
-`timeout_seconds` is small, and `SupportTwin` catches cumulative refunds
-on one order exceeding a cap even when each individual `issue_refund` call
-is within the per-call limit.
+`simulate/digital_twin.py` covers all six roles' tools (an earlier version
+of this README claimed this before `research_agent`'s tools actually had a
+twin — that gap is now closed via `WebTwin`), including three **stateful
+cross-call checks** the privilege layer's per-call ABAC conditions
+genuinely can't express: `CodeExecTwin` catches cumulative CPU time across
+a session exceeding a cap even when each individual `timeout_seconds` is
+small; `SupportTwin` catches cumulative refunds on one order exceeding a
+cap even when each individual `issue_refund` call is within the per-call
+limit; `WebTwin` catches fetching too many *distinct* domains in one
+session (a crawl/exfil pattern) even when every individual `fetch_url`
+call matches the role's `["https://*"]` resource pattern fine.
 
 ## Setup
 

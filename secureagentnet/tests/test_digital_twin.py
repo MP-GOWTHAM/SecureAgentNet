@@ -6,6 +6,7 @@ from secureagentnet.simulate.digital_twin import (
     FilesystemTwin,
     InboxTwin,
     SupportTwin,
+    WebTwin,
 )
 
 
@@ -152,3 +153,72 @@ def test_refund_caps_are_tracked_independently_per_order():
     sandbox.run(ToolCallRequest(tool_name="issue_refund", resource="order_a", params={"amount_usd": 45}))
     result_b = sandbox.run(ToolCallRequest(tool_name="issue_refund", resource="order_b", params={"amount_usd": 45}))
     assert result_b.safe  # order_b's own total (45) is unaffected by order_a's
+
+
+# --- research_agent twin -------------------------------------------------------
+
+def test_fetch_url_now_has_a_real_twin_backend_not_the_fallback():
+    """research_agent's tools had no twin coverage at all until this fix —
+    confirms that gap is closed.
+    """
+    sandbox = DigitalTwinSandbox()
+    result = sandbox.run(ToolCallRequest(tool_name="fetch_url", resource="https://example.com/page"))
+    assert "no twin backend" not in " ".join(result.safety_notes)
+
+
+def test_fetch_url_with_no_allowlist_configured_is_safe_by_default():
+    sandbox = DigitalTwinSandbox()
+    result = sandbox.run(ToolCallRequest(tool_name="fetch_url", resource="https://anything.example.com/x"))
+    assert result.safe
+
+
+def test_fetch_url_outside_trusted_domains_is_flagged_unsafe():
+    twin = WebTwin(trusted_domains={"wikipedia.org", "en.wikipedia.org"})
+    sandbox = DigitalTwinSandbox(web=twin)
+    result = sandbox.run(ToolCallRequest(tool_name="fetch_url", resource="https://attacker-controlled.example.com/x"))
+    assert not result.safe
+
+
+def test_fetch_url_within_trusted_domains_is_safe():
+    twin = WebTwin(trusted_domains={"wikipedia.org", "en.wikipedia.org"})
+    sandbox = DigitalTwinSandbox(web=twin)
+    result = sandbox.run(ToolCallRequest(tool_name="fetch_url", resource="https://en.wikipedia.org/wiki/X"))
+    assert result.safe
+
+
+def test_cumulative_distinct_domain_fetches_exceed_cap_even_when_each_domain_is_trusted():
+    """The stateful check: no single fetch looks unusual, but crawling
+    many distinct domains in one session does — a per-call resource
+    pattern like ["https://*"] can never catch this.
+    """
+    twin = WebTwin(max_distinct_domains=3)
+    sandbox = DigitalTwinSandbox(web=twin)
+    domains = ["a.com", "b.com", "c.com", "d.com"]
+    results = [
+        sandbox.run(ToolCallRequest(tool_name="fetch_url", resource=f"https://{d}/x")) for d in domains
+    ]
+    assert all(r.safe for r in results[:3])  # first 3 distinct domains, within cap
+    assert not results[3].safe  # 4th distinct domain exceeds the cap of 3
+
+
+def test_refetching_the_same_domain_does_not_count_twice_toward_the_cap():
+    twin = WebTwin(max_distinct_domains=2)
+    sandbox = DigitalTwinSandbox(web=twin)
+    sandbox.run(ToolCallRequest(tool_name="fetch_url", resource="https://a.com/1"))
+    sandbox.run(ToolCallRequest(tool_name="fetch_url", resource="https://a.com/2"))  # same domain, different path
+    result = sandbox.run(ToolCallRequest(tool_name="fetch_url", resource="https://b.com/1"))
+    assert result.safe  # only 2 distinct domains (a.com, b.com) seen, at the cap but not over
+
+
+def test_save_note_persists_across_calls():
+    twin = WebTwin()
+    sandbox = DigitalTwinSandbox(web=twin)
+    sandbox.run(ToolCallRequest(tool_name="save_note", resource="/workspace/notes/x.md", params={"content": "hi"}))
+    assert twin.notes["/workspace/notes/x.md"] == "hi"
+
+
+def test_web_search_has_a_twin_backend():
+    sandbox = DigitalTwinSandbox()
+    result = sandbox.run(ToolCallRequest(tool_name="web_search", resource="climate change"))
+    assert "no twin backend" not in " ".join(result.safety_notes)
+    assert result.safe

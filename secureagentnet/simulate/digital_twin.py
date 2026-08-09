@@ -3,23 +3,27 @@
 Per the doc's own feasibility caution (§8), "full simulated environment"
 means stateful mock backends that respond dynamically to sequences of
 calls, not one-shot stub responses. This module implements that: an
-`Inbox`, `Filesystem`, and `Calendar` twin, each with real internal state
-that mutates across calls within a session, plus a `DigitalTwinSandbox`
-that intercepts a planned tool call, redirects it to the matching twin,
-and evaluates the twin's resulting state against safety criteria — the
-concrete, checkable mismatch the doc's `forward_email` example describes
-(recipient domain doesn't match any known contact), not just "did the call
-error".
+`Inbox`, `Filesystem`, `Calendar`, `CodeExec`, `Support`, and `Web` twin —
+one per tool family used across the six roles in `privilege/policies/` —
+each with real internal state that mutates across calls within a session,
+plus a `DigitalTwinSandbox` that intercepts a planned tool call, redirects
+it to the matching twin, and evaluates the twin's resulting state against
+safety criteria — the concrete, checkable mismatch the doc's `forward_email`
+example describes (recipient domain doesn't match any known contact), not
+just "did the call error".
 
 Scope: this simulates enough backend behavior to make pre-execution safety
 checks meaningful for the six agent roles already defined in
-`privilege/policies/` — it is not a general-purpose service emulator.
+`privilege/policies/` — it is not a general-purpose service emulator. Any
+tool name outside those roles' own policies falls through to a "no twin
+backend, assumed safe" note rather than raising.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 
 from secureagentnet.privilege.policy_engine import ToolCallRequest
 
@@ -129,6 +133,46 @@ class CodeExecTwin:
 
 
 @dataclass
+class WebTwin:
+    """Stateful mock backend for research_agent's fetch_url/web_search/
+    save_note. `fetched_domains` accumulates across calls — this is the
+    same "no single call looks bad, the sequence does" pattern as the
+    other stateful twins: an agent that fetches from many distinct domains
+    in one session (crawling for a specific piece of data, or being
+    walked through a chain of injected redirects) is a real behavioral
+    signal a per-call `resource_patterns: ["https://*"]` check can't see,
+    since that pattern matches every individual call fine.
+    """
+
+    trusted_domains: set[str] = field(default_factory=set)
+    fetched_domains: set[str] = field(default_factory=set)
+    notes: dict[str, str] = field(default_factory=dict)
+    max_distinct_domains: int = 5
+
+    def fetch_url(self, resource: Optional[str], params: dict) -> dict:
+        domain = urlparse(resource).netloc if resource else None
+        if domain:
+            self.fetched_domains.add(domain)
+        return {
+            "url": resource,
+            "domain": domain,
+            # With no trusted_domains configured, every domain counts as
+            # trusted (no allowlist to violate) — mirrors ToolPermission's
+            # own "[*] means unconstrained" convention.
+            "domain_trusted": (domain in self.trusted_domains) if self.trusted_domains else True,
+            "distinct_domains_fetched": len(self.fetched_domains),
+        }
+
+    def web_search(self, resource: Optional[str], params: dict) -> dict:
+        return {"query": resource, "n_results": 5}
+
+    def save_note(self, resource: Optional[str], params: dict) -> dict:
+        content = params.get("content", "")
+        self.notes[resource] = content
+        return {"path": resource, "saved": True}
+
+
+@dataclass
 class SupportTwin:
     """Stateful mock support-ticket backend. `refunded_total_by_order`
     accumulates across calls — the check this enables (cumulative refunds
@@ -178,6 +222,7 @@ class DigitalTwinSandbox:
     CALENDAR_TOOLS = {"create_event", "cancel_event"}
     CODE_TOOLS = {"run_code", "list_sandbox_files"}
     SUPPORT_TOOLS = {"read_ticket", "reply_ticket", "issue_refund"}
+    WEB_TOOLS = {"fetch_url", "web_search", "save_note"}
 
     def __init__(
         self,
@@ -186,6 +231,7 @@ class DigitalTwinSandbox:
         calendar: Optional[CalendarTwin] = None,
         code_exec: Optional[CodeExecTwin] = None,
         support: Optional[SupportTwin] = None,
+        web: Optional[WebTwin] = None,
         max_attendees: int = 10,
     ):
         self.inbox = inbox or InboxTwin()
@@ -193,6 +239,7 @@ class DigitalTwinSandbox:
         self.calendar = calendar or CalendarTwin()
         self.code_exec = code_exec or CodeExecTwin()
         self.support = support or SupportTwin()
+        self.web = web or WebTwin()
         self.max_attendees = max_attendees
 
     def run(self, request: ToolCallRequest) -> SandboxResult:
@@ -260,6 +307,22 @@ class DigitalTwinSandbox:
                         f"${self.support.max_cumulative_refund_usd:.2f} — each individual refund may be within "
                         "the privilege layer's per-call limit while the running total isn't, which only a "
                         "stateful check across calls can catch"
+                    )
+
+        elif request.tool_name in self.WEB_TOOLS:
+            method = getattr(self.web, request.tool_name)
+            outcome = method(request.resource, request.params)
+            safe = True
+            if request.tool_name == "fetch_url":
+                if not outcome.get("domain_trusted", True):
+                    safe = False
+                    notes.append(f"domain '{outcome.get('domain')}' is not on the trusted-domain allowlist")
+                if outcome.get("distinct_domains_fetched", 0) > self.web.max_distinct_domains:
+                    safe = False
+                    notes.append(
+                        f"{outcome['distinct_domains_fetched']} distinct domains fetched this session exceeds "
+                        f"sandbox cap {self.web.max_distinct_domains} — no single fetch call looks unusual, "
+                        "but the sequence does"
                     )
 
         else:
