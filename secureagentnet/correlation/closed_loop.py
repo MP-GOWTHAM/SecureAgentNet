@@ -69,6 +69,20 @@ class CalibrationLayer:
         self.threshold = max(cfg.min_threshold, min(cfg.max_threshold, new_threshold))
         return self.threshold
 
+    def snapshot(self) -> float:
+        """Current threshold, for a caller to hold onto and later pass to
+        `restore()` — e.g. a GUI's "unlearn" action wants to undo exactly
+        the drift caused by one red-team session, not the entire history.
+        """
+        return self.threshold
+
+    def restore(self, threshold: float) -> None:
+        """Directly set the threshold back to a prior `snapshot()` value.
+        Deliberately not clamped through `confirm_outcome`'s EMA — this is
+        an explicit rollback, not another confirmed observation.
+        """
+        self.threshold = threshold
+
 
 class AttackMemoryIndex:
     """FAISS flat index over confirmed-malicious embeddings (cosine
@@ -80,6 +94,10 @@ class AttackMemoryIndex:
         self.similarity_threshold = similarity_threshold
         self._index = faiss.IndexFlatIP(dim)
         self._texts: list[str] = []
+        # Mirrors the normalized vectors FAISS holds — kept ourselves
+        # rather than relying on IndexFlatIP.reconstruct(), so `remove_*`
+        # can rebuild the index without depending on FAISS internals.
+        self._vectors: list[np.ndarray] = []
 
     def _normalize(self, vecs: np.ndarray) -> np.ndarray:
         vecs = vecs.astype("float32")
@@ -91,6 +109,33 @@ class AttackMemoryIndex:
         vec = self._normalize(embedding.reshape(1, -1))
         self._index.add(vec)
         self._texts.append(text)
+        self._vectors.append(vec[0])
+
+    def _rebuild(self) -> None:
+        self._index = faiss.IndexFlatIP(self.dim)
+        if self._vectors:
+            self._index.add(np.stack(self._vectors))
+
+    def remove_texts(self, texts_to_remove: set[str]) -> int:
+        """Removes every entry whose text is in `texts_to_remove` —
+        "unlearning" a red-team session's additions. FAISS's flat index
+        doesn't support in-place deletion, so this rebuilds the index from
+        the remaining entries; fine at the scale a red-team session adds
+        (tens of entries), not intended for bulk pruning of a large index.
+        Returns the number of entries actually removed.
+        """
+        keep_texts, keep_vectors = [], []
+        n_removed = 0
+        for text, vec in zip(self._texts, self._vectors):
+            if text in texts_to_remove:
+                n_removed += 1
+            else:
+                keep_texts.append(text)
+                keep_vectors.append(vec)
+        self._texts = keep_texts
+        self._vectors = keep_vectors
+        self._rebuild()
+        return n_removed
 
     def query(self, embedding: np.ndarray) -> tuple[float, str | None]:
         """Returns (best_similarity, matched_text). best_similarity is 0.0

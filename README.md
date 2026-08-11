@@ -268,6 +268,36 @@ limit; `WebTwin` catches fetching too many *distinct* domains in one
 session (a crawl/exfil pattern) even when every individual `fetch_url`
 call matches the role's `["https://*"]` resource pattern fine.
 
+## GUI
+
+`secureagentnet/webapp/` is a local Flask app: enter a prompt, pick an
+agent role/tool, and see the real fused decision (Allow/Flag/Block) with
+the full signal breakdown — including a plain-language reason when it's
+blocked, e.g. *"Blocked before reaching the agent: risk_score 0.963 >
+block_risk_threshold 0.7"*. From there:
+
+- **Run Red-Team Loop on this Prompt** — runs a live red-team round
+  (`RuleBasedAttackGenerator`) against that exact prompt, using the
+  server's real, running `CalibrationLayer`/`AttackMemoryIndex` — any
+  evasions found actually adjust the live threshold and get added to
+  memory, visible in the status bar (`calibration threshold=...`,
+  `memory index size=...`).
+- **Unlearn this Red-Team Session** — reverts exactly what that one
+  red-team run changed: the calibration threshold snaps back to its
+  pre-session value (`CalibrationLayer.restore()`, not another EMA step)
+  and every memory entry that session added is removed
+  (`AttackMemoryIndex.remove_texts()`), rebuilding the FAISS index. This
+  is scoped per red-team session, not a full system reset — other
+  sessions' additions are untouched.
+
+```bash
+python -m secureagentnet.webapp.app
+# open http://127.0.0.1:5050
+```
+
+Requires a trained checkpoint at `secureagentnet/data/models/v3/` (or set
+`SECUREAGENTNET_MODEL_DIR` to point elsewhere).
+
 ## Setup
 
 ```bash

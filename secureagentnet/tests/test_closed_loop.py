@@ -92,3 +92,65 @@ def test_query_returns_nearest_of_multiple_entries():
     index.add(np.array([0.0, 1.0]), text="far")
     sim, text = index.query(np.array([0.9, 0.1]))
     assert text == "near"
+
+
+# --- unlearn primitives ------------------------------------------------------
+
+def test_calibration_snapshot_and_restore_round_trips():
+    layer = CalibrationLayer(CalibrationConfig(initial_threshold=0.5))
+    snap = layer.snapshot()
+    layer.confirm_outcome(risk_score=0.1, is_malicious=True)
+    assert layer.threshold != snap
+    layer.restore(snap)
+    assert layer.threshold == snap
+
+
+def test_calibration_restore_is_not_clamped_through_ema():
+    """restore() sets the value directly -- it's an explicit rollback, not
+    another confirmed observation subject to decay.
+    """
+    layer = CalibrationLayer(CalibrationConfig(initial_threshold=0.5, min_threshold=0.2, max_threshold=0.8))
+    layer.restore(0.5)
+    assert layer.threshold == 0.5
+
+
+def test_remove_texts_drops_only_matching_entries():
+    index = AttackMemoryIndex(dim=2)
+    index.add(np.array([1.0, 0.0]), text="keep")
+    index.add(np.array([0.0, 1.0]), text="remove_me")
+    n_removed = index.remove_texts({"remove_me"})
+    assert n_removed == 1
+    assert len(index) == 1
+    sim, text = index.query(np.array([1.0, 0.0]))
+    assert text == "keep"
+
+
+def test_remove_texts_returns_zero_for_unknown_text():
+    index = AttackMemoryIndex(dim=2)
+    index.add(np.array([1.0, 0.0]), text="keep")
+    n_removed = index.remove_texts({"never_added"})
+    assert n_removed == 0
+    assert len(index) == 1
+
+
+def test_remove_texts_index_still_queryable_after_removal():
+    """The rebuilt FAISS index (not just the Python-side bookkeeping) must
+    actually work after a removal — this exercises _rebuild(), not just
+    the _texts/_vectors lists.
+    """
+    index = AttackMemoryIndex(dim=2, similarity_threshold=0.99)
+    index.add(np.array([1.0, 0.0]), text="a")
+    index.add(np.array([0.0, 1.0]), text="b")
+    index.remove_texts({"a"})
+    assert index.is_known_variant(np.array([0.0, 1.0]))  # "b" still findable
+    assert not index.is_known_variant(np.array([1.0, 0.0]))  # "a" is gone
+
+
+def test_remove_all_texts_leaves_empty_queryable_index():
+    index = AttackMemoryIndex(dim=2)
+    index.add(np.array([1.0, 0.0]), text="a")
+    index.remove_texts({"a"})
+    assert len(index) == 0
+    sim, text = index.query(np.array([1.0, 0.0]))
+    assert sim == 0.0
+    assert text is None

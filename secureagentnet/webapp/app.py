@@ -1,0 +1,307 @@
+"""Local GUI for SecureAgentNet: enter a prompt, see the real fused
+decision (with a plain-language reason when it's blocked), then run a
+red-team loop against that same prompt, then optionally "unlearn" exactly
+what that red-team session added (calibration threshold drift + memory
+index entries) — not a reset of the whole system, just that one session's
+effect.
+
+Run with: python -m secureagentnet.webapp.app
+Then open http://127.0.0.1:5050
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import uuid
+from datetime import datetime, timezone
+
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+from flask import Flask, jsonify, request, send_from_directory
+
+import torch
+
+from secureagentnet.correlation.adaptive_risk_engine import RiskSignals
+from secureagentnet.correlation.closed_loop import AttackMemoryIndex, CalibrationConfig, CalibrationLayer
+from secureagentnet.correlation.fusion import FusionAction, FusionEngine
+from secureagentnet.detector.model import InjectionRiskModel, load_tokenizer
+from secureagentnet.detector.train import pick_device
+from secureagentnet.eval.red_team import RuleBasedAttackGenerator, StoppingCondition, run_red_team_loop
+from secureagentnet.privilege.memory_protection import MemoryProtectionLayer, MemoryWriteRequest
+from secureagentnet.privilege.policy_engine import POLICIES_DIR, PolicyEngine, ToolCallRequest, issue_credential
+from secureagentnet.simulate.agent_env import MEMORY_WRITE_TOOLS, ROLE_SOURCE_TYPE, ROLES, _build_provenance_tag
+from secureagentnet.simulate.behavioral_anomaly import ActionSequence, BehavioralAnomalyDetector
+from secureagentnet.simulate.digital_twin import DigitalTwinSandbox
+from secureagentnet.provenance.tracker import ProvenanceTracker
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("webapp")
+
+MODEL_DIR = os.environ.get(
+    "SECUREAGENTNET_MODEL_DIR",
+    "/Users/gowtham/Desktop/secureagentnet/secureagentnet/data/models/v3",
+)
+CREDENTIAL_TTL_SECONDS = 24 * 3600
+
+# Sensible default (tool_name, resource) per role, used to prefill the UI
+# and as the fallback when the client doesn't override them — one
+# representative in-scope action per role, matching agent_env's own
+# BENIGN_SCENARIOS choices where possible.
+ROLE_DEFAULT_ACTION = {
+    "email_agent": {"tool_name": "send_email", "resource": "alice@secureagentnet-corp.com", "params": {"recipient_count": 1}},
+    "file_agent": {"tool_name": "write_file", "resource": "/workspace/notes/summary.md", "params": {}},
+    "research_agent": {"tool_name": "save_note", "resource": "/workspace/notes/research.md", "params": {}},
+    "calendar_agent": {"tool_name": "create_event", "resource": None, "params": {"attendee_count": 2}},
+    "code_exec_agent": {"tool_name": "run_code", "resource": "/sandbox/script.py", "params": {"timeout_seconds": 5}},
+    "support_agent": {"tool_name": "issue_refund", "resource": "order_1", "params": {"amount_usd": 20}},
+}
+
+app = Flask(__name__, static_folder=None)
+
+
+class Pipeline:
+    """Process-lifetime state — one running instance of the fused
+    pipeline, matching how a real deployed agent would hold one detector,
+    one calibration layer, one memory index, etc. across many requests
+    rather than rebuilding them per call.
+    """
+
+    def __init__(self):
+        logger.info("Loading detector from %s ...", MODEL_DIR)
+        self.device = pick_device()
+        self.model = InjectionRiskModel.load(MODEL_DIR, map_location=str(self.device)).to(self.device)
+        self.tokenizer = load_tokenizer(self.model.config.model_name)
+        self.model.eval()
+
+        self.policy_engine = PolicyEngine.from_directory(POLICIES_DIR)
+        self.credential_by_role = {
+            role: issue_credential(role, ttl_seconds=CREDENTIAL_TTL_SECONDS) for role in ROLES
+        }
+        self.fusion_engine = FusionEngine()
+        self.calibration = CalibrationLayer(CalibrationConfig(initial_threshold=0.5))
+        self.memory_index = AttackMemoryIndex(dim=768)
+        self.provenance_tracker = ProvenanceTracker()
+        self.memory_protection = MemoryProtectionLayer()
+        self.behavioral_detector = BehavioralAnomalyDetector()
+        self.digital_twin = DigitalTwinSandbox()
+        self.redteam_sessions: dict[str, dict] = {}
+        logger.info("Pipeline ready on device %s.", self.device)
+
+    def score(self, text: str) -> float:
+        enc = self.tokenizer([text], padding=True, truncation=True, max_length=self.model.config.max_length, return_tensors="pt")
+        with torch.no_grad():
+            return float(self.model.risk_score(enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device))[0])
+
+    def embed(self, text: str):
+        enc = self.tokenizer([text], padding=True, truncation=True, max_length=self.model.config.max_length, return_tensors="pt")
+        with torch.no_grad():
+            vec = self.model.embed(enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device))[0]
+        return vec.cpu().numpy()
+
+    def analyze(self, prompt: str, role: str, tool_name: str, resource: str | None, params: dict) -> dict:
+        now = datetime.now(timezone.utc)
+        request_obj = ToolCallRequest(tool_name=tool_name, resource=resource, params=params or {})
+        credential = self.credential_by_role[role]
+
+        risk_score = self.score(prompt)
+        privilege_decision = self.policy_engine.authorize(credential, request_obj, now=now)
+        sandbox_result = self.digital_twin.run(request_obj)
+
+        tag = _build_provenance_tag(role, request_obj, prompt)
+        source_trust = self.provenance_tracker.trust_score(tag)
+
+        anomaly = self.behavioral_detector.score(ActionSequence(role=role, tool_names=[tool_name]))
+
+        signals = RiskSignals(
+            injection_score=risk_score,
+            behavior_anomaly=anomaly.deviation_score,
+            source_trust=source_trust,
+            privilege_out_of_scope=privilege_decision.out_of_scope,
+            session_history_risk=0.0,
+            twin_unsafe=not sandbox_result.safe,
+        )
+        fusion_result = self.fusion_engine.fuse_signals(signals)
+
+        memory_write_decision = None
+        if tool_name in MEMORY_WRITE_TOOLS:
+            memory_write_decision = self.memory_protection.evaluate(
+                MemoryWriteRequest(content=prompt, tag=tag, risk_score=risk_score), trust_score=source_trust,
+            )
+
+        proceeds = fusion_result.action != FusionAction.BLOCK
+        if fusion_result.action == FusionAction.BLOCK:
+            conflict_message = f"Blocked before reaching the agent: {fusion_result.reason}"
+        elif fusion_result.action == FusionAction.FLAG:
+            conflict_message = f"Allowed, but flagged for review: {fusion_result.reason}"
+        else:
+            conflict_message = "No conflict — proceeding to agent."
+
+        return {
+            "action": fusion_result.action.value,
+            "proceeds": proceeds,
+            "conflict_message": conflict_message,
+            "reason": fusion_result.reason,
+            "blended_risk_score": fusion_result.risk_score,
+            "raw_injection_score": risk_score,
+            "signals": {
+                "injection_score": signals.injection_score,
+                "behavior_anomaly": signals.behavior_anomaly,
+                "source_trust": signals.source_trust,
+                "privilege_out_of_scope": signals.privilege_out_of_scope,
+                "twin_unsafe": signals.twin_unsafe,
+            },
+            "privilege_decision": {
+                "allowed": privilege_decision.allowed,
+                "violation_type": privilege_decision.violation_type.value,
+                "reason": privilege_decision.reason,
+            },
+            "twin_result": {
+                "safe": sandbox_result.safe,
+                "notes": sandbox_result.safety_notes,
+                "outcome": sandbox_result.twin_outcome,
+            },
+            "memory_write_decision": (
+                {"outcome": memory_write_decision.outcome.value, "reason": memory_write_decision.reason}
+                if memory_write_decision else None
+            ),
+            "request": {"tool_name": tool_name, "resource": resource, "role": role},
+        }
+
+    def run_redteam(self, prompt: str, rounds: int, variants_per_round: int) -> dict:
+        threshold_before = self.calibration.snapshot()
+        generator = RuleBasedAttackGenerator(seed=int.from_bytes(os.urandom(2), "big"))
+
+        results = run_red_team_loop(
+            original_attack=prompt,
+            generator=generator,
+            score_fn=self.score,
+            embed_fn=self.embed,
+            memory_index=self.memory_index,
+            calibration=self.calibration,
+            stopping_condition=StoppingCondition(mode="fixed_rounds", max_rounds=rounds),
+            n_variants_per_round=variants_per_round,
+        )
+
+        added_texts = [e for r in results for e in r.evasions]
+        session_id = str(uuid.uuid4())
+        self.redteam_sessions[session_id] = {
+            "threshold_before": threshold_before,
+            "added_texts": added_texts,
+        }
+
+        return {
+            "redteam_session_id": session_id,
+            "threshold_before": threshold_before,
+            "threshold_after": self.calibration.threshold,
+            "rounds": [
+                {
+                    "round_index": r.round_index,
+                    "n_generated": r.n_generated,
+                    "n_screened_out": r.n_screened_out,
+                    "n_caught": r.n_caught,
+                    "n_evaded": r.n_evaded,
+                    "evasion_rate": r.evasion_rate,
+                    "evasions": r.evasions,
+                }
+                for r in results
+            ],
+            "total_evasions": len(added_texts),
+        }
+
+    def unlearn(self, session_id: str) -> dict:
+        session = self.redteam_sessions.pop(session_id, None)
+        if session is None:
+            return {"error": f"unknown redteam_session_id: {session_id}"}, 404
+
+        self.calibration.restore(session["threshold_before"])
+        n_removed = self.memory_index.remove_texts(set(session["added_texts"]))
+        return {
+            "threshold_restored_to": self.calibration.threshold,
+            "n_removed": n_removed,
+            "memory_index_size": len(self.memory_index),
+        }
+
+
+pipeline: Pipeline | None = None
+
+
+def get_pipeline() -> Pipeline:
+    global pipeline
+    if pipeline is None:
+        pipeline = Pipeline()
+    return pipeline
+
+
+@app.route("/")
+def index():
+    return send_from_directory(os.path.join(os.path.dirname(__file__), "static"), "index.html")
+
+
+@app.route("/api/roles")
+def api_roles():
+    return jsonify({"roles": ROLES, "defaults": ROLE_DEFAULT_ACTION})
+
+
+@app.route("/api/analyze", methods=["POST"])
+def api_analyze():
+    data = request.get_json(force=True)
+    prompt = data.get("prompt", "").strip()
+    role = data.get("role", ROLES[0])
+    if not prompt:
+        return jsonify({"error": "prompt is required"}), 400
+    if role not in ROLES:
+        return jsonify({"error": f"unknown role: {role}"}), 400
+
+    action_defaults = ROLE_DEFAULT_ACTION[role]
+    tool_name = data.get("tool_name") or action_defaults["tool_name"]
+    resource = data.get("resource", action_defaults["resource"])
+    params = data.get("params") or dict(action_defaults["params"])
+
+    result = get_pipeline().analyze(prompt, role, tool_name, resource, params)
+    return jsonify(result)
+
+
+@app.route("/api/redteam", methods=["POST"])
+def api_redteam():
+    data = request.get_json(force=True)
+    prompt = data.get("prompt", "").strip()
+    if not prompt:
+        return jsonify({"error": "prompt is required"}), 400
+    rounds = int(data.get("rounds", 3))
+    variants_per_round = int(data.get("variants_per_round", 8))
+    result = get_pipeline().run_redteam(prompt, rounds, variants_per_round)
+    return jsonify(result)
+
+
+@app.route("/api/unlearn", methods=["POST"])
+def api_unlearn():
+    data = request.get_json(force=True)
+    session_id = data.get("redteam_session_id")
+    if not session_id:
+        return jsonify({"error": "redteam_session_id is required"}), 400
+    result = get_pipeline().unlearn(session_id)
+    if isinstance(result, tuple):
+        return jsonify(result[0]), result[1]
+    return jsonify(result)
+
+
+@app.route("/api/status")
+def api_status():
+    p = get_pipeline()
+    return jsonify({
+        "device": str(p.device),
+        "calibration_threshold": p.calibration.threshold,
+        "memory_index_size": len(p.memory_index),
+        "active_redteam_sessions": len(p.redteam_sessions),
+    })
+
+
+def main():
+    get_pipeline()  # load eagerly so the first request isn't slow
+    app.run(host="127.0.0.1", port=5050, debug=False)
+
+
+if __name__ == "__main__":
+    main()
