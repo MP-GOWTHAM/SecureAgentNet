@@ -129,8 +129,15 @@ async function submitPrompt() {
 function render(data) {
   const a = data.analysis;
   document.getElementById('result-panel').classList.remove('hidden');
-  document.getElementById('role-pill').textContent =
-    `Detected role: ${data.detected_role} → ${a.request.tool_name}${a.request.resource ? ' → ' + a.request.resource : ''}`;
+  const pill = document.getElementById('role-pill');
+  const roleLabel = `${data.detected_role} → ${a.request.tool_name}${a.request.resource ? ' → ' + a.request.resource : ''}`;
+  if (data.role_matched) {
+    pill.textContent = `Detected role: ${roleLabel}`;
+    pill.style.borderColor = '';
+  } else {
+    pill.textContent = `⚠ No role keyword matched — defaulted to: ${roleLabel} (low-confidence guess, verify manually)`;
+    pill.style.borderColor = 'var(--flag)';
+  }
 
   const banner = document.getElementById('banner');
   banner.className = 'banner ' + a.action;

@@ -67,18 +67,40 @@ ROLE_KEYWORDS = {
     "file_agent": ["file", "workspace", "delete", "write", "document"],
     "research_agent": ["search", "web", "url", "fetch", "research", "note", "browse"],
     "calendar_agent": ["calendar", "event", "meeting", "schedule", "invite"],
-    "code_exec_agent": ["code", "run", "script", "execute", "sandbox", "python"],
+    "code_exec_agent": [
+        "code", "run", "script", "execute", "sandbox", "python",
+        # Attack/roleplay-framed prompts ("develop a hacking strategy",
+        # "infiltrate a database") don't mention any tool by name but are
+        # squarely about compromising a system -- code_exec_agent is the
+        # tightest-scoped, least-trusted role of the six (see
+        # privilege/policies/code_exec_agent.yaml and simulate/digital_twin.py's
+        # own "highest-value target" framing), so routing this kind of
+        # prompt there is the safer default than accidentally landing on a
+        # more permissive role that happens to match no keywords either.
+        "hack", "hacker", "hacking", "infiltrat", "exploit", "malware",
+        "breach", "database", "steal", "backdoor", "vulnerability",
+    ],
     "support_agent": ["refund", "ticket", "support", "order", "customer"],
 }
+# Used only when NO keyword matches anything above -- kept distinct from
+# code_exec_agent's attack-keyword list so the UI can tell "we recognized
+# this as attack-shaped and routed it to the tightest role" apart from
+# "we genuinely don't know, this is a guess" (see detect_role's return).
 DEFAULT_ROLE = "email_agent"
 
 
-def detect_role(prompt: str) -> str:
+def detect_role(prompt: str) -> tuple[str, bool]:
+    """Returns (role, matched) — `matched` is False only when nothing in
+    ROLE_KEYWORDS hit and DEFAULT_ROLE was used as a last resort, so
+    callers (and the GUI) can distinguish a real keyword-based detection
+    from an honest "couldn't tell" fallback rather than presenting both
+    with the same false confidence.
+    """
     lowered = prompt.lower()
     for role, keywords in ROLE_KEYWORDS.items():
         if any(kw in lowered for kw in keywords):
-            return role
-    return DEFAULT_ROLE
+            return role, True
+    return DEFAULT_ROLE, False
 
 app = Flask(__name__, static_folder=None)
 
@@ -255,7 +277,7 @@ class Pipeline:
         accumulate calibration/memory changes across unrelated callers'
         prompts the way a real multi-turn agent session would.
         """
-        role = detect_role(prompt)
+        role, role_matched = detect_role(prompt)
         action_defaults = ROLE_DEFAULT_ACTION[role]
         analysis = self.analyze(
             prompt, role, action_defaults["tool_name"], action_defaults["resource"], dict(action_defaults["params"]),
@@ -266,6 +288,7 @@ class Pipeline:
 
         return {
             "detected_role": role,
+            "role_matched": role_matched,
             "analysis": analysis,
             "redteam": {
                 "total_evasions": redteam["total_evasions"],
