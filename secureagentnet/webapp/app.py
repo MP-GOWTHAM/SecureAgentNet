@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -58,17 +59,44 @@ ROLE_DEFAULT_ACTION = {
 
 # Keyword -> role, used to auto-detect which agent role a prompt is most
 # plausibly directed at, since the GUI collects only the prompt text now.
-# Deliberately simple substring matching, not a classifier — this project
+# Deliberately simple keyword matching, not a classifier — this project
 # already has one real ML model (the injection detector); guessing intent
 # from keywords is an honest, inspectable heuristic for a demo GUI, not a
 # second model pretending to understand the prompt.
+#
+# Audited once already for two distinct failure modes, both real bugs
+# found by testing actual prompts against the running GUI, not caught by
+# reasoning about the list in the abstract:
+#
+# 1. SUBSTRING COLLISIONS — plain `kw in text` matches a keyword occurring
+#    *inside* an unrelated word: "mail" inside "blackmail", "script"
+#    inside "description"/"subscription", "order" inside
+#    "murder"/"disorder"/"border", "note" inside "denote". Fixed by
+#    anchoring every match to a LEFT word boundary (`\bkeyword`, not
+#    `\bkeyword\b`) — left-only, not both sides, because several keywords
+#    are deliberate stems meant to match inflected forms ("infiltrat" ->
+#    "infiltrate"/"infiltration", "hack" -> "hacker"/"hacking"/"hacked").
+#    A left boundary blocks "blackmail" (no boundary between "black" and
+#    "mail") while still matching "mailbox" (boundary at the true start)
+#    and "infiltrating" (suffix after the stem is fine).
+#
+# 2. GENERIC/IDIOMATIC WHOLE-WORD FALSE POSITIVES — some keywords are
+#    just too common as ordinary English regardless of boundaries, and
+#    happen to be common jailbreak-framing words specifically: "write"
+#    fires on "write a story/tutorial/guide about X" (one of the most
+#    common jailbreak framings there is, nothing to do with file
+#    operations), "forward" fires on "going forward"/"look forward to",
+#    "event" fires on "in the event of X", "run" is an extremely generic
+#    verb, "order" fires on "in order to". No regex fixes a word being
+#    legitimately, commonly used with an unrelated meaning — these were
+#    removed outright rather than pattern-matched around.
 ROLE_KEYWORDS = {
-    "email_agent": ["email", "inbox", "mail", "forward"],
-    "file_agent": ["file", "workspace", "delete", "write", "document"],
+    "email_agent": ["email", "inbox", "mail"],
+    "file_agent": ["file", "workspace", "delete", "document"],
     "research_agent": ["search", "web", "url", "fetch", "research", "note", "browse"],
-    "calendar_agent": ["calendar", "event", "meeting", "schedule", "invite"],
+    "calendar_agent": ["calendar", "meeting", "schedule", "invite"],
     "code_exec_agent": [
-        "code", "run", "script", "execute", "sandbox", "python",
+        "code", "script", "execute", "sandbox", "python",
         # Attack/roleplay-framed prompts ("develop a hacking strategy",
         # "infiltrate a database") don't mention any tool by name but are
         # squarely about compromising a system -- code_exec_agent is the
@@ -80,7 +108,7 @@ ROLE_KEYWORDS = {
         "hack", "hacker", "hacking", "infiltrat", "exploit", "malware",
         "breach", "database", "steal", "backdoor", "vulnerability",
     ],
-    "support_agent": ["refund", "ticket", "support", "order", "customer"],
+    "support_agent": ["refund", "ticket", "support", "customer"],
 }
 # Used only when NO keyword matches anything above -- kept distinct from
 # code_exec_agent's attack-keyword list so the UI can tell "we recognized
@@ -95,10 +123,13 @@ def detect_role(prompt: str) -> tuple[str, bool]:
     callers (and the GUI) can distinguish a real keyword-based detection
     from an honest "couldn't tell" fallback rather than presenting both
     with the same false confidence.
+
+    Matches are left-word-boundary-anchored (see ROLE_KEYWORDS' comment
+    for why left-only, not `\\b...\\b`).
     """
     lowered = prompt.lower()
     for role, keywords in ROLE_KEYWORDS.items():
-        if any(kw in lowered for kw in keywords):
+        if any(re.search(r"\b" + re.escape(kw), lowered) for kw in keywords):
             return role, True
     return DEFAULT_ROLE, False
 
