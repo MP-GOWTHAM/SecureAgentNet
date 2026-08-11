@@ -33,8 +33,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from secureagentnet.correlation.adaptive_risk_engine import RiskSignals
 from secureagentnet.correlation.fusion import FusionEngine, FusionResult
 from secureagentnet.privilege.policy_engine import Decision, PolicyEngine, ScopedCredential, ToolCallRequest
+from secureagentnet.simulate.behavioral_anomaly import ActionSequence, BehavioralAnomalyDetector
 
 ROLES = ["email_agent", "file_agent", "research_agent", "calendar_agent", "code_exec_agent", "support_agent"]
 
@@ -151,6 +153,9 @@ def run_pipeline(
     fusion_engine: FusionEngine,
     credential_by_role: dict[str, ScopedCredential],
     now: Optional[datetime] = None,
+    behavioral_detector: Optional[BehavioralAnomalyDetector] = None,
+    source_trust: float = 1.0,
+    session_history_risk: float = 0.0,
 ) -> PipelineResult:
     """Wires one detector test example through role assignment, tool-call
     construction, privilege check, and fusion — the full pipeline for a
@@ -162,12 +167,39 @@ def run_pipeline(
     is evaluated against the same clock the credentials were *issued*
     against — otherwise a fixed `issued_at` from test/eval setup can look
     expired against real wall-clock time long after the fact.
+
+    `behavioral_detector`: when given, switches from the 2-signal
+    `FusionEngine.fuse()` path to the 5-signal `fuse_signals()` path. The
+    behavioral-anomaly signal is REAL, not a placeholder — it's computed
+    by scoring the assigned role against the actual tool call this example
+    builds, via `BehavioralAnomalyDetector`. `source_trust` and
+    `session_history_risk` default to neutral values (fully trusted, no
+    history) and stay constant across a batch call by default, because
+    this project's eval datasets (qualifire etc.) carry no per-example
+    provenance or session data to compute them from — that's a real,
+    documented limitation, not a fabricated signal. Pass per-example
+    values if you have them (e.g. from a live `ProvenanceTracker`).
+    When `behavioral_detector` is None (the default), behavior is
+    unchanged from the original 2-signal pipeline — existing callers
+    (Phase 4's `run_eval.py`) are unaffected.
     """
     role = assign_role(index)
     request, violation_kind = build_tool_call(role, is_attack=bool(true_label), index=index)
     credential = credential_by_role[role]
     privilege_decision = policy_engine.authorize(credential, request, now=now)
-    fusion_result = fusion_engine.fuse(risk_score, privilege_decision)
+
+    if behavioral_detector is not None:
+        anomaly = behavioral_detector.score(ActionSequence(role=role, tool_names=[request.tool_name]))
+        signals = RiskSignals(
+            injection_score=risk_score,
+            behavior_anomaly=anomaly.deviation_score,
+            source_trust=source_trust,
+            privilege_out_of_scope=privilege_decision.out_of_scope,
+            session_history_risk=session_history_risk,
+        )
+        fusion_result = fusion_engine.fuse_signals(signals)
+    else:
+        fusion_result = fusion_engine.fuse(risk_score, privilege_decision)
 
     return PipelineResult(
         text=text,

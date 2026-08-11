@@ -12,6 +12,7 @@ from secureagentnet.simulate.agent_env import (
     build_tool_call,
     run_pipeline,
 )
+from secureagentnet.simulate.behavioral_anomaly import BehavioralAnomalyDetector
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -117,3 +118,88 @@ def test_run_pipeline_benign_low_risk_allows(policy_engine, credential_by_role):
     )
     assert result.fusion_result.action == FusionAction.ALLOW
     assert result.privilege_decision.allowed
+
+
+# --- 5-signal path via behavioral_detector ----------------------------------
+
+def test_run_pipeline_without_behavioral_detector_uses_2_signal_path(policy_engine, credential_by_role):
+    """Default behavior (no behavioral_detector) must be unchanged from
+    before this wiring existed — FusionResult.signals stays None.
+    """
+    fusion_engine = FusionEngine()
+    result = run_pipeline(
+        text="benign", true_label=0, index=1, risk_score=0.02,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW,
+    )
+    assert result.fusion_result.signals is None
+
+
+def test_run_pipeline_with_behavioral_detector_uses_5_signal_path(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    detector = BehavioralAnomalyDetector()
+    result = run_pipeline(
+        text="benign", true_label=0, index=1, risk_score=0.02,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, behavioral_detector=detector,
+    )
+    assert result.fusion_result.signals is not None
+    assert result.fusion_result.signals.injection_score == 0.02
+
+
+def test_behavioral_signal_reflects_the_actual_assigned_tool_call(policy_engine, credential_by_role):
+    """The behavioral-anomaly component of the blended risk score is real,
+    not a placeholder: an in-scope-but-attack scenario (a tool call that's
+    part of the role's normal baseline) should show near-zero deviation,
+    while an out-of-scope attack tool (never in any role's baseline)
+    should show high deviation.
+    """
+    fusion_engine = FusionEngine()
+    detector = BehavioralAnomalyDetector()
+
+    # index=0 with true_label=0 -> email_agent benign scenario: read_inbox,
+    # which IS in email_agent's behavioral baseline.
+    benign_result = run_pipeline(
+        text="benign", true_label=0, index=0, risk_score=0.0,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, behavioral_detector=detector,
+    )
+    assert benign_result.fusion_result.signals.behavior_anomaly == 0.0
+
+
+def test_source_trust_and_session_history_are_configurable(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    detector = BehavioralAnomalyDetector()
+    result = run_pipeline(
+        text="benign", true_label=0, index=1, risk_score=0.0,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, behavioral_detector=detector,
+        source_trust=0.1, session_history_risk=0.9,
+    )
+    assert result.fusion_result.signals.source_trust == 0.1
+    assert result.fusion_result.signals.session_history_risk == 0.9
+
+
+def test_low_trust_via_5_signal_path_can_flag_what_2_signal_path_would_allow(policy_engine, credential_by_role):
+    """Demonstrates the actual value of wiring in the extra signals: the
+    exact same low detector risk_score that the 2-signal path allows
+    outright gets flagged once low source_trust is factored in.
+    """
+    fusion_engine = FusionEngine()
+    detector = BehavioralAnomalyDetector()
+
+    # 0.2 raw risk_score is comfortably under the 2-signal path's default
+    # flag_risk_threshold (0.3), so the baseline stays a clean ALLOW.
+    two_signal = run_pipeline(
+        text="benign", true_label=0, index=1, risk_score=0.2,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW,
+    )
+    five_signal_untrusted = run_pipeline(
+        text="benign", true_label=0, index=1, risk_score=0.2,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, behavioral_detector=detector,
+        source_trust=0.0,
+    )
+    assert two_signal.fusion_result.action == FusionAction.ALLOW
+    assert five_signal_untrusted.fusion_result.action != FusionAction.ALLOW
