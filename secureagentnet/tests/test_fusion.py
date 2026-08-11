@@ -116,6 +116,44 @@ def test_fuse_signals_max_injection_alone_can_still_clear_block_threshold():
     assert result.risk_score > engine.config.block_risk_threshold
 
 
+def test_fuse_signals_combo_branch_uses_raw_injection_not_blended_score():
+    """Regression test for the real C-ASR bug found running twin/provenance
+    against qualifire: a raw injection_score just above
+    block_combo_risk_threshold (0.4), combined with out_of_scope=True,
+    must BLOCK via the combo branch even when other clean signals would
+    dilute the fully blended score below 0.4. Before the fix, this
+    example's blended score (~0.33, since injection weight is 0.73) fell
+    under the 0.4 combo threshold and the attack executed uncaught.
+    """
+    engine = FusionEngine()
+    signals = RiskSignals(
+        injection_score=0.45, behavior_anomaly=0.0, source_trust=1.0, privilege_out_of_scope=True,
+    )
+    # sanity check: the blended score alone (without the fix) would NOT
+    # have cleared 0.4 -- confirms this test is actually exercising the
+    # bug, not a scenario that happened to work either way
+    blended_only = engine.risk_engine.compute_risk(signals)
+    assert blended_only < engine.config.block_combo_risk_threshold
+
+    result = engine.fuse_signals(signals)
+    assert result.action == FusionAction.BLOCK
+    assert "combo_risk_score" in result.reason
+
+
+def test_fuse_signals_combo_branch_still_respects_in_scope():
+    """The combo branch's AND-gate on out_of_scope must still hold — a
+    high raw injection score alone, in-scope, doesn't trigger the combo
+    branch (it may still trigger the top-level block_risk_threshold branch
+    on its own merits, which is a separate check).
+    """
+    engine = FusionEngine(FusionConfig(block_risk_threshold=0.99))  # keep the top branch from firing
+    signals = RiskSignals(
+        injection_score=0.45, behavior_anomaly=0.0, source_trust=1.0, privilege_out_of_scope=False,
+    )
+    result = engine.fuse_signals(signals)
+    assert result.action != FusionAction.BLOCK
+
+
 def test_fuse_signals_blends_via_adaptive_risk_engine_by_default():
     engine = FusionEngine()
     signals = RiskSignals(injection_score=0.9, behavior_anomaly=0.0, source_trust=1.0, privilege_out_of_scope=False)

@@ -120,14 +120,38 @@ class FusionEngine:
         out_of_scope_reason: str,
         twin_unsafe: bool = False,
         twin_reason: str = "",
+        combo_risk_score: float | None = None,
     ) -> tuple[FusionAction, str]:
         """Shared threshold logic — `fuse()` and `fuse_signals()` both
         funnel through this so a given (risk_score, out_of_scope) pair
         always produces the same action no matter which entry point
         computed the risk_score. `twin_unsafe` is only ever set by
         `fuse_signals()` — `fuse()` always passes the default `False`.
+
+        `combo_risk_score` (defaults to `risk_score` when not given, which
+        is what `fuse()` always does): the value checked specifically by
+        the `block_combo_risk_threshold` branch. This is a real fix for a
+        real bug — `fuse_signals()` passes the RAW `injection_score` here,
+        not the blended score. The combo branch's intent is "moderate
+        DETECTOR confidence + out-of-scope tool call", but checking it
+        against the full blended score silently made it far less sensitive
+        than the 2-signal path's original behavior: with injection at
+        weight 0.73, a raw score of 0.45 (which would trigger 2-signal's
+        `risk_score > 0.4` combo-block outright) only blends to ~0.35 once
+        other signals dilute it, missing the same threshold. Measured
+        directly on qualifire: adding the digital twin or provenance
+        tracker ALONE (without behavioral_anomaly's extra weight to
+        compensate) made C-ASR meaningfully WORSE than the 2-signal
+        baseline (0.856->0.989 for twin, 0.872->0.936 for provenance) —
+        exactly this branch under-firing on real chained-attack examples.
+        Using the raw injection score here restores the combo branch's
+        original sensitivity regardless of which other signals are mixed
+        in, while the top-level `block_risk_threshold` and `flag_risk_threshold`
+        branches still use the full blended score, which is where the
+        other signals are supposed to matter.
         """
         cfg = self.config
+        combo_risk_score = risk_score if combo_risk_score is None else combo_risk_score
 
         if cfg.strict_privilege and out_of_scope:
             return FusionAction.BLOCK, f"strict_privilege: {out_of_scope_reason}"
@@ -138,9 +162,9 @@ class FusionEngine:
         if risk_score > cfg.block_risk_threshold:
             return FusionAction.BLOCK, f"risk_score {risk_score:.3f} > block_risk_threshold {cfg.block_risk_threshold}"
 
-        if out_of_scope and risk_score > cfg.block_combo_risk_threshold:
+        if out_of_scope and combo_risk_score > cfg.block_combo_risk_threshold:
             return FusionAction.BLOCK, (
-                f"risk_score {risk_score:.3f} > block_combo_risk_threshold "
+                f"combo_risk_score {combo_risk_score:.3f} > block_combo_risk_threshold "
                 f"{cfg.block_combo_risk_threshold} and tool call out of scope"
             )
 
@@ -178,6 +202,7 @@ class FusionEngine:
         action, reason = self._decide(
             blended_risk, out_of_scope, "privilege_out_of_scope",
             twin_unsafe=signals.twin_unsafe, twin_reason="digital twin sandbox flagged simulated outcome unsafe",
+            combo_risk_score=signals.injection_score,
         )
         return FusionResult(
             action=action, reason=reason, risk_score=blended_risk, out_of_scope=out_of_scope, signals=signals,
