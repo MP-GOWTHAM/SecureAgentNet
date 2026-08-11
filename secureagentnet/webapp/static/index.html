@@ -101,13 +101,24 @@ async function refreshStatus() {
     `device=${s.device} · calibration threshold=${s.calibration_threshold.toFixed(3)} · memory index size=${s.memory_index_size}`;
 }
 
+let submitInFlight = false;
+
 async function submitPrompt() {
+  // Guards against a double-submit racing itself (e.g. a stray extra
+  // click event) -- two overlapping /api/submit calls previously left the
+  // result panel silently empty when their responses landed out of order,
+  // with no visible error. btn.disabled alone doesn't fully prevent this
+  // since disabling happens after this function is already entered.
+  if (submitInFlight) return;
+
   const prompt = document.getElementById('prompt').value.trim();
   if (!prompt) { alert('Enter a prompt first.'); return; }
 
+  submitInFlight = true;
   const btn = document.getElementById('submit-btn');
   const stage = document.getElementById('stage');
   btn.disabled = true; btn.textContent = 'Working...';
+  stage.style.color = ''; // clear any error styling left over from a previous failed submit
   stage.textContent = 'Detecting role, running fused decision, red-teaming, then unlearning...';
   document.getElementById('result-panel').classList.add('hidden');
 
@@ -119,9 +130,17 @@ async function submitPrompt() {
     const data = await res.json();
     if (data.error) { alert(data.error); return; }
     render(data);
+  } catch (e) {
+    // Previously an error here (network failure, or a bug inside
+    // render()) left the panel silently hidden with nothing telling the
+    // user anything went wrong. Now it's visible and logged.
+    console.error('submitPrompt failed:', e);
+    stage.textContent = 'Something went wrong: ' + e.message + ' (see console for details)';
+    stage.style.color = 'var(--block)';
   } finally {
+    submitInFlight = false;
     btn.disabled = false; btn.textContent = 'Submit';
-    stage.textContent = '';
+    if (!stage.style.color) stage.textContent = '';
     refreshStatus();
   }
 }
