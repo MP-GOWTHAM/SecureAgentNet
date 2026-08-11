@@ -1,9 +1,8 @@
-"""Local GUI for SecureAgentNet: enter a prompt, see the real fused
-decision (with a plain-language reason when it's blocked), then run a
-red-team loop against that same prompt, then optionally "unlearn" exactly
-what that red-team session added (calibration threshold drift + memory
-index entries) — not a reset of the whole system, just that one session's
-effect.
+"""Local GUI for SecureAgentNet: enter a prompt, submit it, done. Role
+detection, the fused decision, red-teaming that same prompt, and
+unlearning the red-team session's effect afterward all happen server-side
+in one request (`Pipeline.submit`) — no separate controls in the GUI for
+any of that.
 
 Run with: python -m secureagentnet.webapp.app
 Then open http://127.0.0.1:5050
@@ -45,10 +44,9 @@ MODEL_DIR = os.environ.get(
 )
 CREDENTIAL_TTL_SECONDS = 24 * 3600
 
-# Sensible default (tool_name, resource) per role, used to prefill the UI
-# and as the fallback when the client doesn't override them — one
-# representative in-scope action per role, matching agent_env's own
-# BENIGN_SCENARIOS choices where possible.
+# Sensible default (tool_name, resource) per role — the tool call that
+# role's own prompt gets evaluated against once auto-detection (below)
+# picks a role, since the GUI no longer asks the user to specify one.
 ROLE_DEFAULT_ACTION = {
     "email_agent": {"tool_name": "send_email", "resource": "alice@secureagentnet-corp.com", "params": {"recipient_count": 1}},
     "file_agent": {"tool_name": "write_file", "resource": "/workspace/notes/summary.md", "params": {}},
@@ -57,6 +55,30 @@ ROLE_DEFAULT_ACTION = {
     "code_exec_agent": {"tool_name": "run_code", "resource": "/sandbox/script.py", "params": {"timeout_seconds": 5}},
     "support_agent": {"tool_name": "issue_refund", "resource": "order_1", "params": {"amount_usd": 20}},
 }
+
+# Keyword -> role, used to auto-detect which agent role a prompt is most
+# plausibly directed at, since the GUI collects only the prompt text now.
+# Deliberately simple substring matching, not a classifier — this project
+# already has one real ML model (the injection detector); guessing intent
+# from keywords is an honest, inspectable heuristic for a demo GUI, not a
+# second model pretending to understand the prompt.
+ROLE_KEYWORDS = {
+    "email_agent": ["email", "inbox", "mail", "forward"],
+    "file_agent": ["file", "workspace", "delete", "write", "document"],
+    "research_agent": ["search", "web", "url", "fetch", "research", "note", "browse"],
+    "calendar_agent": ["calendar", "event", "meeting", "schedule", "invite"],
+    "code_exec_agent": ["code", "run", "script", "execute", "sandbox", "python"],
+    "support_agent": ["refund", "ticket", "support", "order", "customer"],
+}
+DEFAULT_ROLE = "email_agent"
+
+
+def detect_role(prompt: str) -> str:
+    lowered = prompt.lower()
+    for role, keywords in ROLE_KEYWORDS.items():
+        if any(kw in lowered for kw in keywords):
+            return role
+    return DEFAULT_ROLE
 
 app = Flask(__name__, static_folder=None)
 
@@ -223,6 +245,37 @@ class Pipeline:
             "memory_index_size": len(self.memory_index),
         }
 
+    def submit(self, prompt: str, rounds: int = 3, variants_per_round: int = 8) -> dict:
+        """One call, one prompt in, everything else automatic: detect the
+        role, run the full fused decision, red-team that exact prompt
+        against the live detector, then immediately unlearn that
+        red-team session so it leaves no lasting drift on shared state —
+        this endpoint is meant to answer "is this prompt safe, and how
+        robust is that verdict" for one prompt at a time, not to
+        accumulate calibration/memory changes across unrelated callers'
+        prompts the way a real multi-turn agent session would.
+        """
+        role = detect_role(prompt)
+        action_defaults = ROLE_DEFAULT_ACTION[role]
+        analysis = self.analyze(
+            prompt, role, action_defaults["tool_name"], action_defaults["resource"], dict(action_defaults["params"]),
+        )
+
+        redteam = self.run_redteam(prompt, rounds, variants_per_round)
+        unlearn_result = self.unlearn(redteam["redteam_session_id"])
+
+        return {
+            "detected_role": role,
+            "analysis": analysis,
+            "redteam": {
+                "total_evasions": redteam["total_evasions"],
+                "rounds": redteam["rounds"],
+                "threshold_before": redteam["threshold_before"],
+                "threshold_peak": redteam["threshold_after"],
+            },
+            "unlearn": unlearn_result,
+        }
+
 
 pipeline: Pipeline | None = None
 
@@ -242,6 +295,26 @@ def index():
 @app.route("/api/roles")
 def api_roles():
     return jsonify({"roles": ROLES, "defaults": ROLE_DEFAULT_ACTION})
+
+
+@app.route("/api/submit", methods=["POST"])
+def api_submit():
+    """The only endpoint the GUI calls now: prompt in, everything else
+    (role detection, the fused decision, red-teaming, unlearning)
+    automatic. /api/analyze, /api/redteam, /api/unlearn stay available
+    below as separate endpoints for anyone driving the pipeline step by
+    step directly (e.g. the comparison scripts, or a future UI that wants
+    manual control back) — /api/submit is a thin orchestration on top of
+    them, not a replacement.
+    """
+    data = request.get_json(force=True)
+    prompt = data.get("prompt", "").strip()
+    if not prompt:
+        return jsonify({"error": "prompt is required"}), 400
+    rounds = int(data.get("rounds", 3))
+    variants_per_round = int(data.get("variants_per_round", 8))
+    result = get_pipeline().submit(prompt, rounds, variants_per_round)
+    return jsonify(result)
 
 
 @app.route("/api/analyze", methods=["POST"])
