@@ -12,6 +12,8 @@ from secureagentnet.simulate.agent_env import (
     build_tool_call,
     run_pipeline,
 )
+from secureagentnet.privilege.memory_protection import MemoryProtectionLayer, MemoryWriteOutcome
+from secureagentnet.provenance.tracker import ProvenanceTracker, SourceType
 from secureagentnet.simulate.behavioral_anomaly import BehavioralAnomalyDetector
 from secureagentnet.simulate.digital_twin import DigitalTwinSandbox, InboxTwin
 
@@ -295,3 +297,178 @@ def test_strict_twin_blocks_via_full_pipeline_where_default_config_would_not(pol
     # own out-of-scope combo-block may also fire on this scenario — the
     # point is strict_twin guarantees BLOCK regardless of what else is going on
     assert lenient.fusion_result.signals.twin_unsafe is True
+
+
+# --- provenance tracker wiring -------------------------------------------------
+#
+# index=2, true_label=0 deterministically assigns role=research_agent and
+# BENIGN_SCENARIOS["research_agent"][2] = save_note (index%3==2 for
+# index=2) — used throughout both the provenance and memory-protection
+# sections below since it's the one reachable save_note scenario.
+
+def test_provenance_tracker_not_invoked_by_default(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    result = run_pipeline(
+        text="benign note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW,
+    )
+    assert result.provenance_tag is None
+
+
+def test_provenance_tracker_populates_tag_and_dynamic_trust(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    tracker = ProvenanceTracker()
+    result = run_pipeline(
+        text="benign note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, provenance_tracker=tracker,
+    )
+    assert result.provenance_tag is not None
+    assert result.provenance_tag.source_type == SourceType.RETRIEVAL_WEB  # research_agent's mapped type
+    # no history yet -> base trust for RETRIEVAL_WEB (0.20)
+    assert result.fusion_result.signals.source_trust == 0.20
+
+
+def test_provenance_tracker_reflects_confirmed_history(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    tracker = ProvenanceTracker()
+
+    # first pass to learn the tag this example would get, then confirm it malicious repeatedly
+    probe = run_pipeline(
+        text="benign note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, provenance_tracker=tracker,
+    )
+    for _ in range(10):
+        tracker.confirm_outcome(probe.provenance_tag, outcome=0.0)
+
+    result = run_pipeline(
+        text="benign note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, provenance_tracker=tracker,
+    )
+    assert result.fusion_result.signals.source_trust < 0.20  # dropped below the untouched base trust
+
+
+def test_provenance_tracker_alone_switches_to_multi_signal_path(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    tracker = ProvenanceTracker()
+    result = run_pipeline(
+        text="benign note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, provenance_tracker=tracker,
+    )
+    assert result.fusion_result.signals is not None
+    assert result.fusion_result.signals.behavior_anomaly == 0.0  # no behavioral_detector given
+
+
+def test_static_source_trust_still_works_without_a_tracker(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    detector = BehavioralAnomalyDetector()  # any extra to reach the multi-signal path
+    result = run_pipeline(
+        text="benign note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, behavioral_detector=detector, source_trust=0.42,
+    )
+    assert result.provenance_tag is None
+    assert result.fusion_result.signals.source_trust == 0.42
+
+
+# --- memory protection wiring ---------------------------------------------------
+
+def test_memory_protection_not_invoked_by_default(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    result = run_pipeline(
+        text="benign note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW,
+    )
+    assert result.memory_write_decision is None
+
+
+def test_memory_protection_skips_non_memory_write_tools(policy_engine, credential_by_role):
+    """index=0 (email_agent, read_inbox) is not in MEMORY_WRITE_TOOLS —
+    memory_protection must not fire even though it's provided.
+    """
+    fusion_engine = FusionEngine()
+    layer = MemoryProtectionLayer()
+    result = run_pipeline(
+        text="check inbox", true_label=0, index=0, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, memory_protection=layer,
+    )
+    assert result.memory_write_decision is None
+
+
+def test_memory_protection_commits_low_risk_content(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    layer = MemoryProtectionLayer()
+    result = run_pipeline(
+        text="benign note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, memory_protection=layer,
+    )
+    assert result.memory_write_decision is not None
+    assert result.memory_write_decision.outcome == MemoryWriteOutcome.COMMITTED
+
+
+def test_memory_protection_rejects_high_risk_content(policy_engine, credential_by_role):
+    # true_label stays 0 to keep hitting the save_note scenario (there's no
+    # save_note ATTACK_SCENARIOS entry for research_agent) -- risk_score is
+    # what the detector says regardless of the dataset's ground-truth label,
+    # so a high risk_score here still exercises the reject path correctly.
+    fusion_engine = FusionEngine()
+    layer = MemoryProtectionLayer()
+    result = run_pipeline(
+        text="malicious note", true_label=0, index=2, risk_score=0.9,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, memory_protection=layer,
+    )
+    assert result.memory_write_decision.outcome == MemoryWriteOutcome.REJECTED
+
+
+def test_memory_write_decision_is_independent_of_fusion_action(policy_engine, credential_by_role):
+    """A call can be fusion-ALLOWed (the tool call itself is fine) while
+    memory protection still quarantines/rejects the specific content —
+    these are different questions, not required to agree.
+    """
+    fusion_engine = FusionEngine()
+    layer = MemoryProtectionLayer()
+    # low risk_score -> fusion ALLOWs the save_note call, but force a
+    # distrustful memory-protection outcome via a provenance tracker with
+    # confirmed-malicious history for this exact source
+    tracker = ProvenanceTracker()
+    probe = run_pipeline(
+        text="note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, provenance_tracker=tracker,
+    )
+    for _ in range(10):
+        tracker.confirm_outcome(probe.provenance_tag, outcome=0.0)
+
+    result = run_pipeline(
+        text="note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW,
+        provenance_tracker=tracker, memory_protection=layer,
+    )
+    assert result.fusion_result.action == FusionAction.ALLOW  # low risk, tool call itself is fine
+    assert result.memory_write_decision.outcome in (MemoryWriteOutcome.QUARANTINED, MemoryWriteOutcome.REJECTED)
+
+
+def test_memory_protection_uses_dynamic_trust_when_provenance_tracker_given(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    layer = MemoryProtectionLayer()
+    tracker = ProvenanceTracker()  # RETRIEVAL_WEB base trust 0.20 -- already below quarantine_trust_threshold (0.5)
+
+    result = run_pipeline(
+        text="note", true_label=0, index=2, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW,
+        provenance_tracker=tracker, memory_protection=layer,
+    )
+    # base RETRIEVAL_WEB trust (0.20) is below MemoryProtectionLayer's
+    # default quarantine_trust_threshold (0.5) -> quarantined, not committed
+    # even though risk_score alone is very low
+    assert result.memory_write_decision.outcome == MemoryWriteOutcome.QUARANTINED

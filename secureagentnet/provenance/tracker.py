@@ -34,16 +34,24 @@ class SourceType(str, Enum):
     TOOL_EMAIL = "tool:email"
     TOOL_FILE = "tool:file"
     RETRIEVAL_WEB = "retrieval:web"
+    TOOL_CODE = "tool:code"  # code_exec_agent's sandbox — code/data it reads or is given to run
+    TOOL_SUPPORT = "tool:support"  # support_agent's ticket text — arbitrary external submitter, like email
 
 
 # Base trust by source type — a static lookup, not learned. Values from the
-# methodology doc's worked table.
+# methodology doc's worked table for the original 5; TOOL_CODE/TOOL_SUPPORT
+# added when wiring all 6 agent_env roles through the provenance tracker —
+# TOOL_SUPPORT mirrors TOOL_EMAIL's 0.30 (both are arbitrary external
+# submitter text), TOOL_CODE sits between TOOL_FILE and TOOL_EMAIL since
+# sandboxed code is semi-structured but can embed arbitrary instructions.
 DEFAULT_BASE_TRUST: dict[SourceType, float] = {
     SourceType.USER_INPUT: 0.95,
     SourceType.TOOL_CALENDAR: 0.70,
     SourceType.TOOL_EMAIL: 0.30,
     SourceType.TOOL_FILE: 0.50,
     SourceType.RETRIEVAL_WEB: 0.20,
+    SourceType.TOOL_CODE: 0.40,
+    SourceType.TOOL_SUPPORT: 0.30,
 }
 
 
