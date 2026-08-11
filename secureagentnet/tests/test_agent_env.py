@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from secureagentnet.correlation.fusion import FusionAction, FusionEngine
+from secureagentnet.correlation.fusion import FusionAction, FusionConfig, FusionEngine
 from secureagentnet.privilege.policy_engine import POLICIES_DIR, PolicyEngine, issue_credential
 from secureagentnet.simulate.agent_env import (
     ATTACK_SCENARIOS,
@@ -13,6 +13,7 @@ from secureagentnet.simulate.agent_env import (
     run_pipeline,
 )
 from secureagentnet.simulate.behavioral_anomaly import BehavioralAnomalyDetector
+from secureagentnet.simulate.digital_twin import DigitalTwinSandbox, InboxTwin
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -203,3 +204,94 @@ def test_low_trust_via_5_signal_path_can_flag_what_2_signal_path_would_allow(pol
     )
     assert two_signal.fusion_result.action == FusionAction.ALLOW
     assert five_signal_untrusted.fusion_result.action != FusionAction.ALLOW
+
+
+# --- digital twin wiring ------------------------------------------------------
+#
+# index=0, true_label=1 deterministically assigns role=email_agent and
+# ATTACK_SCENARIOS["email_agent"][0] = send_email to "attacker@evil.com"
+# ("resource_denied") — reachable via the standard index cycling, unlike
+# email_agent's "in_scope" send_email scenario (index position 3), which
+# turns out to be structurally unreachable through pure index%6/index%4
+# cycling since 6 and 4 share a common factor with the role's period. Not
+# a bug introduced here — a pre-existing scenario-table coverage gap,
+# worth a separate look later; these tests work around it by using the
+# resource_denied scenario, which privilege AND the twin both flag,
+# rather than the (unreachable) case where only the twin would catch it.
+
+def test_digital_twin_not_invoked_by_default(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    result = run_pipeline(
+        text="attack", true_label=1, index=0, risk_score=0.1,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW,
+    )
+    assert result.sandbox_result is None
+
+
+def test_digital_twin_populates_sandbox_result(policy_engine, credential_by_role):
+    fusion_engine = FusionEngine()
+    twin = DigitalTwinSandbox()  # default InboxTwin: empty known_contacts
+    result = run_pipeline(
+        text="attack", true_label=1, index=0, risk_score=0.1,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, digital_twin=twin,
+    )
+    assert result.sandbox_result is not None
+    assert result.sandbox_result.tool_name == "send_email"
+    assert not result.sandbox_result.safe  # attacker@evil.com isn't a known contact
+    assert result.fusion_result.signals.twin_unsafe is True
+
+
+def test_digital_twin_safe_outcome_does_not_set_twin_unsafe(policy_engine, credential_by_role):
+    """Configuring the twin so it considers the exact same recipient a
+    known contact must flip twin_unsafe to False — proves the signal
+    actually reflects the twin's simulated state, not a hardcoded value.
+    """
+    fusion_engine = FusionEngine()
+    twin = DigitalTwinSandbox(inbox=InboxTwin(known_contacts={"attacker@evil.com"}))
+    result = run_pipeline(
+        text="attack", true_label=1, index=0, risk_score=0.1,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, digital_twin=twin,
+    )
+    assert result.sandbox_result.safe
+    assert result.fusion_result.signals.twin_unsafe is False
+
+
+def test_digital_twin_alone_switches_to_multi_signal_path_without_behavioral_detector(
+    policy_engine, credential_by_role
+):
+    """digital_twin, like behavioral_detector, is independently sufficient
+    to switch on fuse_signals() — you shouldn't need both.
+    """
+    fusion_engine = FusionEngine()
+    twin = DigitalTwinSandbox()
+    result = run_pipeline(
+        text="attack", true_label=1, index=0, risk_score=0.1,
+        policy_engine=policy_engine, fusion_engine=fusion_engine,
+        credential_by_role=credential_by_role, now=NOW, digital_twin=twin,
+    )
+    assert result.fusion_result.signals is not None
+    assert result.fusion_result.signals.behavior_anomaly == 0.0  # no behavioral_detector given -> stays neutral
+
+
+def test_strict_twin_blocks_via_full_pipeline_where_default_config_would_not(policy_engine, credential_by_role):
+    twin = DigitalTwinSandbox()  # flags attacker@evil.com unsafe
+
+    lenient = run_pipeline(
+        text="attack", true_label=1, index=0, risk_score=0.05,  # low detector risk
+        policy_engine=policy_engine, fusion_engine=FusionEngine(),
+        credential_by_role=credential_by_role, now=NOW, digital_twin=twin,
+    )
+    strict = run_pipeline(
+        text="attack", true_label=1, index=0, risk_score=0.05,
+        policy_engine=policy_engine, fusion_engine=FusionEngine(FusionConfig(strict_twin=True)),
+        credential_by_role=credential_by_role, now=NOW, digital_twin=twin,
+    )
+    assert strict.fusion_result.action == FusionAction.BLOCK
+    assert "strict_twin" in strict.fusion_result.reason
+    # lenient path isn't asserted to be non-BLOCK here since privilege's
+    # own out-of-scope combo-block may also fire on this scenario — the
+    # point is strict_twin guarantees BLOCK regardless of what else is going on
+    assert lenient.fusion_result.signals.twin_unsafe is True

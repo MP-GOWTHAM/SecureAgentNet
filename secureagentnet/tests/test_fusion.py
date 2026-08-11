@@ -167,12 +167,61 @@ def test_fuse_signals_out_of_scope_still_respects_strict_privilege():
 
 
 def test_fuse_signals_uses_custom_risk_engine_if_provided():
-    custom = AdaptiveRiskEngine(weights=RiskWeights(injection=1, behavior=0, trust=0, privilege=0, session=0))
+    custom = AdaptiveRiskEngine(weights=RiskWeights(injection=1, behavior=0, trust=0, privilege=0, session=0, twin=0))
     engine = FusionEngine(risk_engine=custom)
     signals = RiskSignals(injection_score=0.42, behavior_anomaly=1.0, source_trust=0.0, privilege_out_of_scope=True)
     result = engine.fuse_signals(signals)
     # only injection_score should matter given the custom all-weight-on-injection engine
     assert result.risk_score == pytest.approx(0.42, abs=1e-6)
+
+
+def test_fuse_signals_twin_unsafe_alone_blocked_under_strict_twin():
+    engine = FusionEngine(FusionConfig(strict_twin=True))
+    signals = RiskSignals(injection_score=0.0, source_trust=1.0, privilege_out_of_scope=False, twin_unsafe=True)
+    result = engine.fuse_signals(signals)
+    assert result.action == FusionAction.BLOCK
+    assert "strict_twin" in result.reason
+
+
+def test_fuse_signals_twin_unsafe_not_blocked_by_default():
+    """strict_twin defaults to False — a twin-flagged-unsafe outcome
+    contributes to the blended risk score (via RiskWeights.twin) but
+    doesn't unconditionally block on its own, mirroring strict_privilege's
+    default-off behavior.
+    """
+    engine = FusionEngine()
+    signals = RiskSignals(injection_score=0.0, source_trust=1.0, privilege_out_of_scope=False, twin_unsafe=True)
+    result = engine.fuse_signals(signals)
+    assert result.action != FusionAction.BLOCK
+
+
+def test_strict_twin_does_not_affect_twin_safe_calls():
+    engine = FusionEngine(FusionConfig(strict_twin=True))
+    signals = RiskSignals(injection_score=0.0, source_trust=1.0, privilege_out_of_scope=False, twin_unsafe=False)
+    result = engine.fuse_signals(signals)
+    assert result.action == FusionAction.ALLOW
+
+
+def test_strict_twin_and_strict_privilege_are_independent():
+    """strict_twin=True must not accidentally also gate on privilege, and
+    vice versa — the two hard gates are separate config knobs.
+    """
+    engine = FusionEngine(FusionConfig(strict_twin=True, strict_privilege=False))
+    out_of_scope_but_twin_safe = RiskSignals(
+        injection_score=0.0, source_trust=1.0, privilege_out_of_scope=True, twin_unsafe=False,
+    )
+    result = engine.fuse_signals(out_of_scope_but_twin_safe)
+    assert result.action != FusionAction.BLOCK  # strict_privilege is off, twin_unsafe is False
+
+
+def test_fuse_never_produces_twin_unsafe_reason():
+    """The 2-signal fuse() path has no twin input at all — it must never
+    reference strict_twin even if the config enables it, since there's no
+    twin_unsafe value for it to gate on.
+    """
+    engine = FusionEngine(FusionConfig(strict_twin=True))
+    result = engine.fuse(risk_score=0.1, privilege_decision=_decision(allowed=True))
+    assert "strict_twin" not in result.reason
 
 
 def test_fuse_and_fuse_signals_share_the_same_config():

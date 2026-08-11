@@ -56,14 +56,14 @@ def test_no_single_signal_gates_the_decision_alone():
 
 
 def test_weights_are_normalized_regardless_of_input_scale():
-    engine_a = AdaptiveRiskEngine(weights=RiskWeights(injection=1, behavior=0, trust=0, privilege=0, session=0))
-    engine_b = AdaptiveRiskEngine(weights=RiskWeights(injection=100, behavior=0, trust=0, privilege=0, session=0))
+    engine_a = AdaptiveRiskEngine(weights=RiskWeights(injection=1, behavior=0, trust=0, privilege=0, session=0, twin=0))
+    engine_b = AdaptiveRiskEngine(weights=RiskWeights(injection=100, behavior=0, trust=0, privilege=0, session=0, twin=0))
     signals = RiskSignals(injection_score=0.5)
     assert engine_a.compute_risk(signals) == engine_b.compute_risk(signals)
 
 
 def test_risk_is_clamped_to_unit_interval():
-    engine = AdaptiveRiskEngine(weights=RiskWeights(injection=10, behavior=0, trust=0, privilege=0, session=0))
+    engine = AdaptiveRiskEngine(weights=RiskWeights(injection=10, behavior=0, trust=0, privilege=0, session=0, twin=0))
     risk = engine.compute_risk(RiskSignals(injection_score=1.0))
     assert 0.0 <= risk <= 1.0
 

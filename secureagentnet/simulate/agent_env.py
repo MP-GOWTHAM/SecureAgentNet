@@ -37,6 +37,7 @@ from secureagentnet.correlation.adaptive_risk_engine import RiskSignals
 from secureagentnet.correlation.fusion import FusionEngine, FusionResult
 from secureagentnet.privilege.policy_engine import Decision, PolicyEngine, ScopedCredential, ToolCallRequest
 from secureagentnet.simulate.behavioral_anomaly import ActionSequence, BehavioralAnomalyDetector
+from secureagentnet.simulate.digital_twin import DigitalTwinSandbox, SandboxResult
 
 ROLES = ["email_agent", "file_agent", "research_agent", "calendar_agent", "code_exec_agent", "support_agent"]
 
@@ -142,6 +143,11 @@ class PipelineResult:
     risk_score: float
     privilege_decision: Decision
     fusion_result: FusionResult
+    sandbox_result: Optional[SandboxResult] = None
+    """Populated only when `digital_twin` was passed to `run_pipeline` —
+    the pre-execution simulation outcome that fed `fusion_result`'s
+    `twin_unsafe` signal, kept for interpretability.
+    """
 
 
 def run_pipeline(
@@ -156,6 +162,7 @@ def run_pipeline(
     behavioral_detector: Optional[BehavioralAnomalyDetector] = None,
     source_trust: float = 1.0,
     session_history_risk: float = 0.0,
+    digital_twin: Optional[DigitalTwinSandbox] = None,
 ) -> PipelineResult:
     """Wires one detector test example through role assignment, tool-call
     construction, privilege check, and fusion — the full pipeline for a
@@ -179,23 +186,33 @@ def run_pipeline(
     provenance or session data to compute them from — that's a real,
     documented limitation, not a fabricated signal. Pass per-example
     values if you have them (e.g. from a live `ProvenanceTracker`).
-    When `behavioral_detector` is None (the default), behavior is
-    unchanged from the original 2-signal pipeline — existing callers
-    (Phase 4's `run_eval.py`) are unaffected.
+    `digital_twin`: when given, the planned tool call is first run through
+    the sandbox — a real pre-execution simulation (stateful mock Inbox/
+    Filesystem/Calendar/CodeExec/Support/Web backends, see
+    `simulate/digital_twin.py`), and `SandboxResult.safe` becomes the
+    `twin_unsafe` signal. Passing either `behavioral_detector` or
+    `digital_twin` (or both) switches to the multi-signal `fuse_signals()`
+    path; passing neither keeps the original 2-signal pipeline unchanged.
     """
     role = assign_role(index)
     request, violation_kind = build_tool_call(role, is_attack=bool(true_label), index=index)
     credential = credential_by_role[role]
     privilege_decision = policy_engine.authorize(credential, request, now=now)
 
-    if behavioral_detector is not None:
-        anomaly = behavioral_detector.score(ActionSequence(role=role, tool_names=[request.tool_name]))
+    sandbox_result = digital_twin.run(request) if digital_twin is not None else None
+
+    if behavioral_detector is not None or digital_twin is not None:
+        anomaly_score = 0.0
+        if behavioral_detector is not None:
+            anomaly = behavioral_detector.score(ActionSequence(role=role, tool_names=[request.tool_name]))
+            anomaly_score = anomaly.deviation_score
         signals = RiskSignals(
             injection_score=risk_score,
-            behavior_anomaly=anomaly.deviation_score,
+            behavior_anomaly=anomaly_score,
             source_trust=source_trust,
             privilege_out_of_scope=privilege_decision.out_of_scope,
             session_history_risk=session_history_risk,
+            twin_unsafe=(sandbox_result is not None and not sandbox_result.safe),
         )
         fusion_result = fusion_engine.fuse_signals(signals)
     else:
@@ -210,4 +227,5 @@ def run_pipeline(
         risk_score=risk_score,
         privilege_decision=privilege_decision,
         fusion_result=fusion_result,
+        sandbox_result=sandbox_result,
     )

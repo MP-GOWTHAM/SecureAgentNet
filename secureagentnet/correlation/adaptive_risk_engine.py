@@ -18,6 +18,8 @@ risk" for every term):
 - source_trust: INVERTED (1 - trust) — high trust should *lower* risk
 - privilege_deviation: 1.0 if out-of-scope else 0.0
 - session_history: 0-1, caller-supplied (e.g. recent flag rate for this session)
+- twin_unsafe: 1.0 if the digital twin sandbox's pre-execution simulation
+  flagged the outcome unsafe, else 0.0 (methodology §2.6)
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ class RiskSignals:
     source_trust: float = 1.0  # 1.0 = fully trusted, default when provenance unknown
     privilege_out_of_scope: bool = False
     session_history_risk: float = 0.0
+    twin_unsafe: bool = False  # digital twin sandbox flagged the simulated outcome unsafe
 
 
 @dataclass
@@ -67,24 +70,35 @@ class RiskWeights:
     exists to measure — silently unblockable was the worst possible
     version of this bug.
 
-    Fixed by giving injection alone enough weight (0.72) to strictly clear
+    Fixed by giving injection alone enough weight (0.73) to strictly clear
     0.70 on its own, restoring the original "very high detector confidence
     blocks regardless of privilege scope" behavior the 2-signal path
     already had. `privilege`'s own weight here is intentionally small
-    (0.03) — its real power isn't this blended term, it's the separate
+    (0.02) — its real power isn't this blended term, it's the separate
     `out_of_scope AND risk > block_combo_risk_threshold` AND-gate inside
     `FusionEngine._decide()`; giving it a large weight here too would
-    double-count the same signal through two paths.
+    double-count the same signal through two paths. `twin` (0.03) follows
+    the identical reasoning once the digital twin sandbox was wired in:
+    its real power is `FusionConfig.strict_twin`'s hard AND-gate, not this
+    blended term, so it stays deliberately small here too.
+
+    Adding `twin` as a 6th weight is exactly the kind of change that
+    re-broke calibration once already (see above) — every existing weight
+    implicitly shrinks after `normalized()` divides by a larger total, so
+    `injection` was re-verified to still clear 0.70 after adding this term
+    (0.73 raw, sum=1.00, no renormalization surprise) rather than just
+    appending a plausible-looking new number.
     """
 
-    injection: float = 0.72
-    behavior: float = 0.14
-    trust: float = 0.10
-    privilege: float = 0.03
+    injection: float = 0.73
+    behavior: float = 0.12
+    trust: float = 0.09
+    privilege: float = 0.02
     session: float = 0.01
+    twin: float = 0.03
 
     def normalized(self) -> "RiskWeights":
-        total = self.injection + self.behavior + self.trust + self.privilege + self.session
+        total = self.injection + self.behavior + self.trust + self.privilege + self.session + self.twin
         if total == 0:
             return self
         return RiskWeights(
@@ -93,6 +107,7 @@ class RiskWeights:
             trust=self.trust / total,
             privilege=self.privilege / total,
             session=self.session / total,
+            twin=self.twin / total,
         )
 
 
@@ -100,12 +115,14 @@ def weighted_sum_combiner(signals: RiskSignals, weights: RiskWeights) -> float:
     w = weights.normalized()
     distrust = 1.0 - signals.source_trust
     privilege_term = 1.0 if signals.privilege_out_of_scope else 0.0
+    twin_term = 1.0 if signals.twin_unsafe else 0.0
     risk = (
         w.injection * signals.injection_score
         + w.behavior * signals.behavior_anomaly
         + w.trust * distrust
         + w.privilege * privilege_term
         + w.session * signals.session_history_risk
+        + w.twin * twin_term
     )
     return max(0.0, min(1.0, risk))
 

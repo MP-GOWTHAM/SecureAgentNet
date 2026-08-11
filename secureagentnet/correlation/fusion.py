@@ -73,6 +73,15 @@ class FusionConfig:
     flag_risk_threshold: float = 0.3
     flag_on_out_of_scope: bool = True
     strict_privilege: bool = False
+    strict_twin: bool = False
+    """Mirrors `strict_privilege`'s pattern for the digital twin sandbox
+    (methodology §2.6): when True, a twin-flagged-unsafe outcome is an
+    unconditional BLOCK regardless of risk score — "the simulated
+    execution concretely showed this is unsafe" is treated as a hard
+    boundary, not just one more signal that can be outweighed by a low
+    detector score. Only reachable via `fuse_signals()` — `fuse()` has no
+    twin input at all.
+    """
 
 
 @dataclass
@@ -104,16 +113,27 @@ class FusionEngine:
         # existing 2-signal callers pay no cost for its existence.
         self.risk_engine = risk_engine or AdaptiveRiskEngine()
 
-    def _decide(self, risk_score: float, out_of_scope: bool, out_of_scope_reason: str) -> tuple[FusionAction, str]:
-        """Shared threshold logic — both `fuse()` and `fuse_signals()`
+    def _decide(
+        self,
+        risk_score: float,
+        out_of_scope: bool,
+        out_of_scope_reason: str,
+        twin_unsafe: bool = False,
+        twin_reason: str = "",
+    ) -> tuple[FusionAction, str]:
+        """Shared threshold logic — `fuse()` and `fuse_signals()` both
         funnel through this so a given (risk_score, out_of_scope) pair
         always produces the same action no matter which entry point
-        computed the risk_score.
+        computed the risk_score. `twin_unsafe` is only ever set by
+        `fuse_signals()` — `fuse()` always passes the default `False`.
         """
         cfg = self.config
 
         if cfg.strict_privilege and out_of_scope:
             return FusionAction.BLOCK, f"strict_privilege: {out_of_scope_reason}"
+
+        if cfg.strict_twin and twin_unsafe:
+            return FusionAction.BLOCK, f"strict_twin: {twin_reason}" if twin_reason else "strict_twin: sandbox flagged unsafe"
 
         if risk_score > cfg.block_risk_threshold:
             return FusionAction.BLOCK, f"risk_score {risk_score:.3f} > block_risk_threshold {cfg.block_risk_threshold}"
@@ -142,17 +162,23 @@ class FusionEngine:
         return FusionResult(action=action, reason=reason, risk_score=risk_score, out_of_scope=out_of_scope)
 
     def fuse_signals(self, signals: RiskSignals) -> FusionResult:
-        """Extended 5-signal path (methodology §2.4): blends injection
-        score, behavioral anomaly, source trust, privilege deviation, and
-        session history via `self.risk_engine` into one risk score, then
-        applies the identical threshold rules `fuse()` uses — so a 0.75
-        blended score and a 0.75 raw detector score trigger the exact same
-        action, keeping the two entry points comparable rather than
-        secretly different decision systems.
+        """Extended multi-signal path (methodology §2.4/§2.6): blends
+        injection score, behavioral anomaly, source trust, privilege
+        deviation, session history, and digital-twin-sandbox outcome via
+        `self.risk_engine` into one risk score, then applies the identical
+        threshold rules `fuse()` uses — so a 0.75 blended score and a 0.75
+        raw detector score trigger the exact same action, keeping the two
+        entry points comparable rather than secretly different decision
+        systems. `signals.twin_unsafe` also independently gates via
+        `FusionConfig.strict_twin`, mirroring how `privilege_out_of_scope`
+        gates via `strict_privilege`.
         """
         blended_risk = self.risk_engine.compute_risk(signals)
         out_of_scope = signals.privilege_out_of_scope
-        action, reason = self._decide(blended_risk, out_of_scope, "privilege_out_of_scope")
+        action, reason = self._decide(
+            blended_risk, out_of_scope, "privilege_out_of_scope",
+            twin_unsafe=signals.twin_unsafe, twin_reason="digital twin sandbox flagged simulated outcome unsafe",
+        )
         return FusionResult(
             action=action, reason=reason, risk_score=blended_risk, out_of_scope=out_of_scope, signals=signals,
         )
