@@ -88,14 +88,23 @@ class RiskWeights:
     `injection` was re-verified to still clear 0.70 after adding this term
     (0.73 raw, sum=1.00, no renormalization surprise) rather than just
     appending a plausible-looking new number.
+
+    Raised again to 0.86 when `FusionConfig.block_risk_threshold` moved
+    0.7->0.85 (real qualifire tradeoff: Utility 0.507->0.792, see
+    fusion.py): the same "max-confidence injection alone must strictly
+    clear the block threshold" invariant applies at the new threshold too
+    (0.73 cleared 0.7 but not 0.85), so injection was raised just enough
+    to clear it again (0.86 > 0.85) while every other weight shrank
+    proportionally to keep the sum at 1.00 — same reasoning as above,
+    re-applied at the new operating point rather than left stale.
     """
 
-    injection: float = 0.73
-    behavior: float = 0.12
-    trust: float = 0.09
-    privilege: float = 0.02
-    session: float = 0.01
-    twin: float = 0.03
+    injection: float = 0.86
+    behavior: float = 0.06
+    trust: float = 0.05
+    privilege: float = 0.01
+    session: float = 0.005
+    twin: float = 0.015
 
     def normalized(self) -> "RiskWeights":
         total = self.injection + self.behavior + self.trust + self.privilege + self.session + self.twin

@@ -178,18 +178,22 @@ def test_fuse_signals_same_threshold_rules_as_fuse():
 
 
 def test_fuse_signals_high_behavioral_anomaly_alone_can_trigger_flag_or_block():
-    # threshold set below RiskWeights.behavior (0.14) so behavior_anomaly=1.0
-    # alone (everything else clean) is enough to clear it
-    engine = FusionEngine(FusionConfig(flag_risk_threshold=0.10))
+    # threshold set below RiskWeights.behavior (0.06, shrunk from 0.12 when
+    # injection was raised 0.73->0.86 to keep block_risk_threshold=0.85
+    # reachable by injection alone) so behavior_anomaly=1.0 alone
+    # (everything else clean) is enough to clear it
+    engine = FusionEngine(FusionConfig(flag_risk_threshold=0.05))
     signals = RiskSignals(injection_score=0.0, behavior_anomaly=1.0, source_trust=1.0, privilege_out_of_scope=False)
     result = engine.fuse_signals(signals)
     assert result.action in (FusionAction.FLAG, FusionAction.BLOCK)
 
 
 def test_fuse_signals_low_trust_alone_can_elevate_action():
-    # threshold set below RiskWeights.trust (0.10) so full distrust alone
-    # (everything else clean) is enough to clear it
-    engine = FusionEngine(FusionConfig(flag_risk_threshold=0.08))
+    # threshold set below RiskWeights.trust (0.05, shrunk from 0.09 when
+    # injection was raised 0.73->0.86 to keep block_risk_threshold=0.85
+    # reachable by injection alone) so full distrust alone (everything else
+    # clean) is enough to clear it
+    engine = FusionEngine(FusionConfig(flag_risk_threshold=0.04))
     trusted = engine.fuse_signals(RiskSignals(injection_score=0.0, source_trust=1.0, privilege_out_of_scope=False))
     untrusted = engine.fuse_signals(RiskSignals(injection_score=0.0, source_trust=0.0, privilege_out_of_scope=False))
     assert trusted.action == FusionAction.ALLOW

@@ -68,7 +68,19 @@ class FusionAction(str, Enum):
 
 @dataclass
 class FusionConfig:
-    block_risk_threshold: float = 0.7
+    block_risk_threshold: float = 0.85
+    """Raised from the brief's original 0.7 example after measuring the
+    real FPR/Utility tradeoff on qualifire: 0.7 blocked ~49% of *benign*
+    requests (Utility=0.507) because the held-out detector's raw score
+    distribution overlaps heavily between benign and attack examples
+    (AUC=0.746). 0.85 trades some attack-blocking for a large usability
+    gain — Utility 0.507->0.792 — at the cost of C-ASR rising to 1.0 and
+    ASR rising to 0.337 (measured directly, not estimated). This is a
+    deliberate security/usability tradeoff picked by the project owner,
+    not a free improvement — see docs/workflow_and_benchmarks for the
+    full sweep. A configuration that wants the original stricter posture
+    should pass block_risk_threshold=0.7 explicitly.
+    """
     block_combo_risk_threshold: float = 0.4
     flag_risk_threshold: float = 0.3
     flag_on_out_of_scope: bool = True

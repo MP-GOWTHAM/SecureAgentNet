@@ -188,11 +188,19 @@ def test_low_trust_via_5_signal_path_can_flag_what_2_signal_path_would_allow(pol
     exact same low detector risk_score that the 2-signal path allows
     outright gets flagged once low source_trust is factored in.
     """
-    fusion_engine = FusionEngine()
+    # flag_risk_threshold lowered from the FusionConfig default (0.3) to
+    # 0.25: RiskWeights.trust/behavior shrank (0.09/0.12 -> 0.05/0.06) when
+    # injection was raised 0.73->0.86 to keep block_risk_threshold=0.85
+    # reachable by injection confidence alone, so the same demonstration
+    # (full distrust + one behavioral observation, everything else
+    # identical) now blends to ~0.282 instead of ~0.356 -- still clearly
+    # above a 0.25 flag line, still comfortably below the 0.2 two-signal
+    # baseline that must stay ALLOW.
+    fusion_engine = FusionEngine(FusionConfig(flag_risk_threshold=0.25))
     detector = BehavioralAnomalyDetector()
 
-    # 0.2 raw risk_score is comfortably under the 2-signal path's default
-    # flag_risk_threshold (0.3), so the baseline stays a clean ALLOW.
+    # 0.2 raw risk_score is comfortably under the 0.25 flag_risk_threshold
+    # used by both paths in this test, so the baseline stays a clean ALLOW.
     two_signal = run_pipeline(
         text="benign", true_label=0, index=1, risk_score=0.2,
         policy_engine=policy_engine, fusion_engine=fusion_engine,
