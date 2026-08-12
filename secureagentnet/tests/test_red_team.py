@@ -237,7 +237,14 @@ def test_run_red_team_loop_stops_early_on_evasion_rate_convergence():
     assert len(results) >= 2
 
 
-def test_llm_generator_raises_without_credentials():
+def test_llm_generator_raises_without_credentials(monkeypatch):
+    # Explicitly cleared rather than relying on the ambient environment
+    # not having these set -- a real .env with TOKENROUTER_* now exists in
+    # this project (added for the webapp's red-team button), so this test
+    # must not assume they're absent.
+    monkeypatch.delenv("TOKENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("TOKENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("TOKENROUTER_MODEL", raising=False)
     with pytest.raises(ValueError, match="TOKENROUTER"):
         LLMAttackGenerator(base_url=None, api_key=None, model=None)
 

@@ -19,6 +19,13 @@ from datetime import datetime, timezone
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+except ImportError:
+    pass  # TOKENROUTER_* just won't be set -- LLM red-teaming falls back to rule-based
+
 from flask import Flask, jsonify, request, send_from_directory
 
 import torch
@@ -28,7 +35,7 @@ from secureagentnet.correlation.closed_loop import AttackMemoryIndex, Calibratio
 from secureagentnet.correlation.fusion import FusionAction, FusionEngine
 from secureagentnet.detector.model import InjectionRiskModel, load_tokenizer
 from secureagentnet.detector.train import pick_device
-from secureagentnet.eval.red_team import RuleBasedAttackGenerator, StoppingCondition, run_red_team_loop
+from secureagentnet.eval.red_team import LLMAttackGenerator, RuleBasedAttackGenerator, StoppingCondition, run_red_team_loop
 from secureagentnet.privilege.memory_protection import MemoryProtectionLayer, MemoryWriteRequest
 from secureagentnet.privilege.policy_engine import POLICIES_DIR, PolicyEngine, ToolCallRequest, issue_credential
 from secureagentnet.simulate.agent_env import MEMORY_WRITE_TOOLS, ROLE_SOURCE_TYPE, ROLES, _build_provenance_tag
@@ -244,9 +251,22 @@ class Pipeline:
             "request": {"tool_name": tool_name, "resource": resource, "role": role},
         }
 
+    def _make_generator(self):
+        """Prefers the real LLM generator (TOKENROUTER_* from .env) since
+        it produces genuinely novel paraphrases/obfuscations a fixed rule
+        set can't -- falls back to RuleBasedAttackGenerator (deterministic,
+        no network) if credentials aren't configured or construction fails,
+        rather than the request erroring out.
+        """
+        try:
+            return LLMAttackGenerator(), "llm"
+        except ValueError as e:
+            logger.warning("LLM generator unavailable (%s); falling back to rule-based.", e)
+            return RuleBasedAttackGenerator(seed=int.from_bytes(os.urandom(2), "big")), "rule_based"
+
     def run_redteam(self, prompt: str, rounds: int, variants_per_round: int) -> dict:
         threshold_before = self.calibration.snapshot()
-        generator = RuleBasedAttackGenerator(seed=int.from_bytes(os.urandom(2), "big"))
+        generator, generator_kind = self._make_generator()
 
         results = run_red_team_loop(
             original_attack=prompt,
@@ -268,6 +288,7 @@ class Pipeline:
 
         return {
             "redteam_session_id": session_id,
+            "generator": generator_kind,
             "threshold_before": threshold_before,
             "threshold_after": self.calibration.threshold,
             "rounds": [
@@ -375,11 +396,21 @@ def api_submit():
 def api_analyze():
     data = request.get_json(force=True)
     prompt = data.get("prompt", "").strip()
-    role = data.get("role", ROLES[0])
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
-    if role not in ROLES:
-        return jsonify({"error": f"unknown role: {role}"}), 400
+
+    # Auto-detect only when the caller didn't specify a role explicitly --
+    # same detect_role() the /api/submit path uses, so a bare {"prompt": ...}
+    # call here doesn't fall back to a silently-wrong ROLES[0] default the
+    # way this endpoint used to (the exact bug class fixed elsewhere in
+    # this file for the /api/submit path).
+    role_matched = True
+    if "role" in data:
+        role = data["role"]
+        if role not in ROLES:
+            return jsonify({"error": f"unknown role: {role}"}), 400
+    else:
+        role, role_matched = detect_role(prompt)
 
     action_defaults = ROLE_DEFAULT_ACTION[role]
     tool_name = data.get("tool_name") or action_defaults["tool_name"]
@@ -387,6 +418,8 @@ def api_analyze():
     params = data.get("params") or dict(action_defaults["params"])
 
     result = get_pipeline().analyze(prompt, role, tool_name, resource, params)
+    result["detected_role"] = role
+    result["role_matched"] = role_matched
     return jsonify(result)
 
 
