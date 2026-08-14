@@ -1,0 +1,394 @@
+<title>SecureAgentNet — Workflow & Detector Benchmarks</title>
+<style>
+  :root {
+    --bg: #f6f7fa;
+    --surface: #ffffff;
+    --surface-2: #eef0f5;
+    --border: #dde1e9;
+    --text: #14161d;
+    --muted: #666f82;
+    --accent: #3f5fd6;
+    --accent-soft: #eaeeff;
+    --allow: #1f9d63;
+    --allow-soft: #e6f6ee;
+    --flag: #a06a13;
+    --flag-soft: #fbf1de;
+    --block: #c93f3f;
+    --block-soft: #fbeaea;
+    --code-bg: #eef0f5;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0c0e13;
+      --surface: #141822;
+      --surface-2: #1a1f2b;
+      --border: #262c3a;
+      --text: #e9ebf1;
+      --muted: #8f96a8;
+      --accent: #7c96f5;
+      --accent-soft: #1c2340;
+      --allow: #4ad999;
+      --allow-soft: #103526;
+      --flag: #e3ac3a;
+      --flag-soft: #3a2e10;
+      --block: #f07070;
+      --block-soft: #3a1616;
+      --code-bg: #10141d;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0c0e13;
+    --surface: #141822;
+    --surface-2: #1a1f2b;
+    --border: #262c3a;
+    --text: #e9ebf1;
+    --muted: #8f96a8;
+    --accent: #7c96f5;
+    --accent-soft: #1c2340;
+    --allow: #4ad999;
+    --allow-soft: #103526;
+    --flag: #e3ac3a;
+    --flag-soft: #3a2e10;
+    --block: #f07070;
+    --block-soft: #3a1616;
+    --code-bg: #10141d;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+
+  a { color: var(--accent); }
+
+  ::selection { background: var(--accent-soft); }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+  .wide { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  header.masthead {
+    padding: 64px 0 40px;
+    border-bottom: 1px solid var(--border);
+  }
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(28px, 4.4vw, 40px);
+    line-height: 1.12;
+    letter-spacing: -0.015em;
+    margin: 0 0 14px;
+    text-wrap: balance;
+    font-weight: 650;
+  }
+  .dek {
+    font-size: 17px;
+    color: var(--muted);
+    max-width: 56ch;
+    margin: 0;
+  }
+  .meta-row {
+    display: flex; flex-wrap: wrap; gap: 8px 18px;
+    margin-top: 26px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .meta-row span b { color: var(--text); font-weight: 600; }
+
+  section { padding: 52px 0; border-bottom: 1px solid var(--border); }
+  section:last-of-type { border-bottom: none; }
+
+  h2 {
+    font-size: 22px;
+    letter-spacing: -0.01em;
+    margin: 0 0 10px;
+    text-wrap: balance;
+  }
+  .section-intro {
+    color: var(--muted);
+    font-size: 15px;
+    max-width: 64ch;
+    margin: 0 0 34px;
+  }
+
+  p { max-width: 66ch; }
+  .wide p { max-width: 72ch; }
+
+  code.inline {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.05em 0.4em;
+  }
+
+  /* ---- workflow strip ---- */
+  .flow-scroll { overflow-x: auto; padding-bottom: 6px; }
+  .flow {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    min-width: 920px;
+  }
+  .stage {
+    flex: 1 1 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 16px;
+    position: relative;
+    min-width: 150px;
+  }
+  .stage .num {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+  }
+  .stage h3 {
+    font-size: 14.5px;
+    margin: 8px 0 6px;
+    letter-spacing: -0.005em;
+  }
+  .stage p {
+    font-size: 12.5px;
+    color: var(--muted);
+    margin: 0;
+    max-width: none;
+  }
+  .connector {
+    flex: 0 0 30px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted);
+    font-size: 16px;
+  }
+  .stage.conditional { border-style: dashed; }
+  .stage.conditional .num { color: var(--flag); }
+
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 16px; font-size: 12.5px; color: var(--muted); }
+  .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .legend .dot.solid { background: var(--accent); }
+  .legend .dot.dash { border: 1px dashed var(--flag); background: transparent; }
+
+  /* ---- decision rule ---- */
+  .rule-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 26px 0;
+  }
+  .rule-card .label { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 10px; }
+  .rule-line { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13.5px; line-height: 1.9; }
+  .rule-line .tok-block { color: var(--block); font-weight: 600; }
+  .rule-line .tok-flag { color: var(--flag); font-weight: 600; }
+  .rule-line .tok-allow { color: var(--allow); font-weight: 600; }
+
+  /* ---- pills ---- */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: ui-monospace, monospace; font-size: 11.5px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px;
+  }
+  .pill.allow { background: var(--allow-soft); color: var(--allow); }
+  .pill.flag { background: var(--flag-soft); color: var(--flag); }
+  .pill.block { background: var(--block-soft); color: var(--block); }
+
+  /* ---- tables ---- */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; background: var(--surface); }
+  thead th {
+    text-align: left; font-weight: 600; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--muted); padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2);
+  }
+  tbody td { padding: 11px 16px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.rowlabel { font-weight: 550; color: var(--text); }
+  td.num, th.num { text-align: right; }
+  .table-title { font-size: 13px; font-weight: 600; margin: 30px 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .table-title:first-child { margin-top: 0; }
+
+  .callout {
+    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 16px 18px; margin: 22px 0; font-size: 14.5px;
+  }
+  .callout.warn { border-left-color: var(--flag); }
+  .callout strong { color: var(--text); }
+
+  ul.tight { margin: 12px 0; padding-left: 20px; }
+  ul.tight li { margin: 7px 0; font-size: 15px; color: var(--text); }
+  ul.tight li b { font-weight: 600; }
+  ul.tight li span.m { color: var(--muted); }
+
+  footer { padding: 40px 0 70px; color: var(--muted); font-size: 12.5px; }
+  footer code { font-family: ui-monospace, monospace; }
+
+  @media (max-width: 620px) {
+    header.masthead { padding: 44px 0 30px; }
+    section { padding: 40px 0; }
+  }
+</style>
+
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow">Runtime report</p>
+    <h1>How a prompt moves through SecureAgentNet, and how well the detector actually performs</h1>
+    <p class="dek">The live decision flow behind the GUI — role detection through to an optional red-team probe and its manual reversal — followed by the detector's real accuracy numbers, in-distribution and on the held-out benchmark.</p>
+    <div class="meta-row">
+      <span>Model checkpoint <b>v3</b></span>
+      <span>Backbone <b>DistilBERT</b></span>
+      <span>Held-out set <b>qualifire (5,000 rows)</b></span>
+      <span>Device <b>MPS</b></span>
+    </div>
+  </div>
+</header>
+
+<section id="workflow">
+  <div class="wide">
+    <h2>The runtime workflow</h2>
+    <p class="section-intro">Every prompt goes through the same four solid stages. The last two are conditional — a clean prompt never sees them, since there's nothing to probe and nothing to revert.</p>
+
+    <div class="flow-scroll">
+      <div class="flow">
+        <div class="stage">
+          <div class="num">01</div>
+          <h3>Prompt submitted</h3>
+          <p>One text field. No manual role, tool, or resource selection required.</p>
+        </div>
+        <div class="connector">→</div>
+        <div class="stage">
+          <div class="num">02</div>
+          <h3>Role auto-detection</h3>
+          <p>Keyword-matched against six agent roles. No match → an explicit low-confidence warning, not a silent guess.</p>
+        </div>
+        <div class="connector">→</div>
+        <div class="stage">
+          <div class="num">03</div>
+          <h3>Fused decision</h3>
+          <p>Detector score, privilege check, digital-twin simulation, provenance trust, and behavioral anomaly blend into one risk value.</p>
+        </div>
+        <div class="connector">→</div>
+        <div class="stage conditional">
+          <div class="num">04 · if Block or Flag</div>
+          <h3>Red-team probe</h3>
+          <p>An LLM (or rule-based fallback) rewords the prompt across rounds and tests each variant against the live detector.</p>
+        </div>
+        <div class="connector">→</div>
+        <div class="stage conditional">
+          <div class="num">05 · if run</div>
+          <h3>Unlearn</h3>
+          <p>Reverts exactly that probe's calibration and memory-index changes. The live system returns to its prior state.</p>
+        </div>
+      </div>
+    </div>
+    <div class="legend">
+      <span><span class="dot solid"></span>always runs</span>
+      <span><span class="dot dash"></span>appears only when offered, and only on click</span>
+    </div>
+
+    <div class="rule-card">
+      <div class="label">Fusion decision rule</div>
+      <div class="rule-line">
+        risk_score &gt; 0.70 &nbsp;→&nbsp; <span class="tok-block">BLOCK</span><br>
+        out_of_scope <b>and</b> raw_injection_score &gt; 0.40 &nbsp;→&nbsp; <span class="tok-block">BLOCK</span><br>
+        risk_score &gt; 0.30 &nbsp;→&nbsp; <span class="tok-flag">FLAG</span> <span style="color:var(--muted)">(executes, logged for review)</span><br>
+        otherwise &nbsp;→&nbsp; <span class="tok-allow">ALLOW</span>
+      </div>
+    </div>
+    <p style="font-size: 13.5px; color: var(--muted); max-width: 66ch;">
+      The second rule checks the <em>raw</em> detector score, not the blended one — a fix made after real chained-attack
+      testing showed the blended figure alone let some genuinely out-of-scope calls through uncaught.
+    </p>
+
+    <div class="callout">
+      <strong>Stage 04 only appears on <span class="pill flag">FLAG</span> or <span class="pill block">BLOCK</span>.</strong>
+      An <span class="pill allow">ALLOW</span> decision has nothing to red-team — there's no conflict to probe the robustness of.
+    </div>
+  </div>
+</section>
+
+<section id="benchmarks">
+  <div class="wide">
+    <h2>Detector accuracy benchmarks</h2>
+    <p class="section-intro">Two distinct numbers matter here, and they tell different stories: how the model performs on data shaped like its own training set, and how it performs on <code class="inline mono">qualifire</code> — a benchmark it never trained on.</p>
+
+    <div class="table-title">Detector alone (checkpoint v3)</div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Metric</th><th class="num">Validation<br><span style="font-weight:400;text-transform:none;">(in-distribution)</span></th><th class="num">Held-out test<br><span style="font-weight:400;text-transform:none;">(qualifire)</span></th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="rowlabel">Accuracy</td><td class="num mono">95.2%</td><td class="num mono">59.7%</td></tr>
+          <tr><td class="rowlabel">Precision</td><td class="num mono">—</td><td class="num mono">49.8%</td></tr>
+          <tr><td class="rowlabel">Recall</td><td class="num mono">—</td><td class="num mono">91.7%</td></tr>
+          <tr><td class="rowlabel">F1</td><td class="num mono">96.6%</td><td class="num mono">64.6%</td></tr>
+          <tr><td class="rowlabel">AUC</td><td class="num mono">98.95%</td><td class="num mono">74.6%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <strong>The generalization gap is the real finding, not a rounding error.</strong> Recall stays high on the held-out
+      set (91.7% — it rarely misses an actual attack) but precision drops to 49.8%: roughly half of what it flags as risky
+      on <code class="inline mono">qualifire</code> is actually benign. This traces to training on a broad
+      <code class="inline mono">is_dangerous</code> label rather than an injection-specific one — a scope decision made
+      early in this project, not a defect discovered late.
+    </div>
+
+    <div class="table-title">Full pipeline, by signal configuration</div>
+    <p style="font-size: 14px; color: var(--muted); margin-top: -6px;">5,000 qualifire examples, checkpoint v3. C-ASR measures the chained-attack case specifically: prompts that evade the raw detector <em>and</em> target a genuinely out-of-scope tool call.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Configuration</th><th class="num">ASR</th><th class="num">C-ASR</th><th class="num">FPR</th><th class="num">FNR</th><th class="num">Utility</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="rowlabel">2-signal (detector + privilege)</td><td class="num mono">8.7%</td><td class="num mono">87.2%</td><td class="num mono">61.7%</td><td class="num mono">8.3%</td><td class="num mono">45.5%</td></tr>
+          <tr><td class="rowlabel">+ digital twin</td><td class="num mono">12.9%</td><td class="num mono">87.2%</td><td class="num mono">61.7%</td><td class="num mono">8.3%</td><td class="num mono">63.8%</td></tr>
+          <tr><td class="rowlabel">+ provenance</td><td class="num mono">10.5%</td><td class="num mono">87.2%</td><td class="num mono">61.7%</td><td class="num mono">8.3%</td><td class="num mono">56.0%</td></tr>
+          <tr><td class="rowlabel">+ behavioral anomaly + twin</td><td class="num mono">12.1%</td><td class="num mono">87.2%</td><td class="num mono">61.7%</td><td class="num mono">8.3%</td><td class="num mono">56.9%</td></tr>
+          <tr><td class="rowlabel">Full stack (all five signals)</td><td class="num mono">9.3%</td><td class="num mono">79.8%</td><td class="num mono">61.7%</td><td class="num mono">8.3%</td><td class="num mono">50.7%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <ul class="tight">
+      <li><b>FPR/FNR never move</b> <span class="m">— by construction. These describe the raw detector against a fixed 0.5 threshold, independent of which extra signals are wired into the fusion decision.</span></li>
+      <li><b>Any single extra signal, added alone, doesn't move C-ASR</b> <span class="m">— 87.2% across three different partial configurations. Adding one more weighted input isn't enough on its own to change which chained attacks get caught.</span></li>
+      <li><b>Combining all five signals is the one configuration that actually lowers C-ASR</b> <span class="m">— 79.8%, the only real improvement over the 2-signal baseline. Utility also stays mid-pack (50.7%) rather than the highest single-signal number (63.8%, digital twin alone) — a real trade-off, not a free win.</span></li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Generated from live runs against checkpoint <code>v3</code> and the <code>qualifire</code> held-out set —
+    not projected or interpolated figures.
+  </div>
+</footer>
+
+</body>
