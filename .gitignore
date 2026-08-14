@@ -9,3 +9,5 @@ secureagentnet/data/models/
 *.parquet
 !secureagentnet/tests/fixtures/*.parquet
 .env
+docs/node_modules/
+docs/~$*
