@@ -45,6 +45,11 @@ PUBLISH = {
     "ensemble_v4_persona": "from-scratch ensemble detector (injection axis)",
     "harm_detector": "content-harm classifier (harm axis)",
     "v3": "DistilBERT after the Track B cycle (second combined_max member)",
+    # Not needed by the default runtime configuration, but the README
+    # offers it as the "maximum utility" option (FPR 0.328 against
+    # combined_max's 0.431), and a documented option that a fresh clone
+    # cannot obtain is not really an option.
+    "ensemble_v5_fpr": "persona-rebalanced ensemble (lower FPR, misses one short attack)",
 }
 
 CARD = """---
@@ -63,6 +68,7 @@ are 253 MB each, against GitHub's 100 MB per-file hard limit.
 | `ensemble_v4_persona` | From-scratch ensemble: char-CNN + BiLSTM-attention + scratch transformer, 12.3M params | 0.8278 |
 | `v3` | DistilBERT after the Track B online-retraining cycle, 66M params | 0.7875 |
 | `harm_detector` | Content-harm classifier (a separate axis from injection) | 0.9028 |
+| `ensemble_v5_fpr` | Persona-rebalanced ensemble — lower FPR (0.328 vs 0.363), misses one canonical short attack | 0.8237 |
 
 The recommended runtime configuration is `combined_max` — the elementwise
 max of `ensemble_v4_persona` and `v3`. The two fail in opposite directions

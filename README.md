@@ -401,35 +401,141 @@ above (venv → pip upgrade → install → test run) in one step:
 powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
 ```
 
-### Run the tests
+## Running everything
+
+Every command below assumes the venv is active (`.\.venv\Scripts\Activate.ps1`)
+or is prefixed with `.\.venv\Scripts\python.exe`. Nothing here needs a
+Hugging Face login except the dataset builders and model publishing.
+
+| I want to… | Command |
+|---|---|
+| Set up from a fresh clone | `powershell -ExecutionPolicy Bypass -File scripts\bootstrap_windows.ps1` |
+| Start the web app | `python -m secureagentnet.webapp.app` |
+| Run the tests | `pytest secureagentnet/tests` |
+| Evaluate a model | `python -m secureagentnet.eval.run_eval --model-dir <dir> --strict-privilege` |
+| Check the short-attack blind spot | `python scripts\probe_short_attacks.py` |
+| Measure each ensemble branch | `python scripts\ablate_branches.py` |
+| Compare combination rules | `python scripts\combine_detectors.py` |
+| Re-tune the block threshold | `python scripts\tune_block_threshold.py --model-dir <dir> --match-model <ref>` |
+| Regenerate report figures | `python scripts\generate_report_artifacts.py` |
+
+### 1. Start the web application
 
 ```powershell
-pytest secureagentnet/tests
-```
-
-### Start the web application
-
-```powershell
+$env:SECUREAGENTNET_MODEL_DIR = "$PWD\secureagentnet\data\models\combined_max"
 python -m secureagentnet.webapp.app
 ```
 
-Then open <http://127.0.0.1:5050>. The model directory now defaults to
-`secureagentnet\data\models\v3` **relative to the repo**, so no path editing
-is needed; `SECUREAGENTNET_MODEL_DIR` still overrides it.
+Then open <http://127.0.0.1:5050>. Omit the env var to use the default
+(`secureagentnet\data\models\v3`, resolved **relative to the repo**).
+`combined_max` is the recommended configuration — see *Which model to run*.
 
-### Run the evaluation
+### 2. Tests
 
 ```powershell
-python -m secureagentnet.eval.run_eval --csv C:\path\to\consolidated_dataset.csv
-python -m secureagentnet.eval.run_eval --csv C:\path\to\consolidated_dataset.csv --strict-privilege
+pytest secureagentnet/tests
+pytest secureagentnet/tests -q -k ensemble
 ```
 
-### Regenerate the splits
+### 3. Evaluation
+
+The headline table (ASR / C-ASR / FPR / FNR / utility) on the held-out
+qualifire benchmark:
 
 ```powershell
+python -m secureagentnet.eval.run_eval --csv data\consolidated_dataset.csv --model-dir secureagentnet\data\models\combined_max --strict-privilege
+```
+
+Useful flags: `--strict-privilege` (hard-blocks out-of-scope calls, drives
+C-ASR to 0), `--block-risk-threshold 0.50` (for a temperature-calibrated
+detector — the 0.85 default assumes DistilBERT's uncalibrated scores),
+`--max-examples 500` (quick smoke run).
+
+### 4. Behavioural probes
+
+Aggregate metrics miss both of the failure modes this project actually hit,
+so these two run in seconds and are worth putting in CI:
+
+```powershell
+python scripts\probe_short_attacks.py --verbose
+python scripts\compare_evasions_ensemble.py
+```
+
+The first reports how many of the 8 canonical short attacks each model
+catches plus a *dilution gap* (near zero means the model reads the attack,
+not the text length). The second scores the 8 real evasions found by
+red-teaming against every checkpoint.
+
+### 5. Analysis
+
+```powershell
+python scripts\ablate_branches.py
+python scripts\combine_detectors.py
+python scripts\tune_block_threshold.py --model-dir secureagentnet\data\models\ensemble_v4_persona --match-model secureagentnet\data\models\v3
+```
+
+Results are written to `secureagentnet\reports\*.json`.
+
+### 6. Red-team and the Track B retraining cycle
+
+```powershell
+python scripts\run_track_b.py
+python scripts\find_evasions.py
+python scripts\run_track_b_v3.py
+```
+
+`find_evasions.py` respects `SECUREAGENTNET_MODEL_DIR` (which checkpoint to
+attack) and `SECUREAGENTNET_RUN_DIR` (where `evasions.json` is written —
+override it or you will overwrite the reference set the v3 cycle consumes).
+
+The web UI exposes the same loop: submit a prompt that is blocked or
+flagged, click **Run red-team loop**, then **Unlearn** to revert the
+calibration threshold and memory-index changes it makes.
+
+### 7. Report artifacts
+
+```powershell
+python scripts\generate_report_artifacts.py
+```
+
+Writes `secureagentnet\reports\figures\figure{1,2,3}*.png`, `latency.json`
+and `frontier.json`. Needs the `injection_detector` and `v3` checkpoints.
+
+### 8. Datasets
+
+Needs a Hugging Face login and acceptance of the three gated licences
+(see **Datasets** above).
+
+```powershell
+python scripts\build_consolidated_dataset.py
+python scripts\build_harm_dataset.py --n-per-class 30000 --n-mix-benign 12000
+python scripts\build_rebalanced_dataset.py
 python -m secureagentnet.detector.data_loader
-python -m secureagentnet.detector.data_loader --csv C:\path\to\consolidated_dataset.csv
 ```
+
+### 9. Publishing checkpoints
+
+```powershell
+.\.venv\Scripts\hf.exe auth login
+python scripts\publish_models.py --repo-id <user>/secureagentnet-models --dry-run
+python scripts\publish_models.py --repo-id <user>/secureagentnet-models
+```
+
+### Which model to run
+
+| Goal | `SECUREAGENTNET_MODEL_DIR` | Trade-off |
+|---|---|---|
+| **Maximum security** (recommended) | `combined_max` | FNR 0.035, 8/8 short attacks, 8/8 evasions; FPR 0.431 |
+| Maximum utility | `ensemble_v5_fpr` | FPR 0.328, utility 0.672; misses 1 short attack |
+| Best single model | `ensemble_v4_persona` | AUC 0.8278; misses 1 short attack |
+| Comparable with prior work | `v3` | Misses the dilution evasion |
+
+Set `SECUREAGENTNET_HARM_MODEL_DIR` to point the content-harm classifier
+elsewhere; it defaults to `secureagentnet\data\models\harm_detector` and is
+skipped silently if absent.
+
+Full measurements for every configuration, including the ones that failed,
+are in `docs\SecureAgentNet_Detector_Architecture.docx` §8.
 
 ### Scripts under `scripts/`
 
