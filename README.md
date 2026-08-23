@@ -401,6 +401,53 @@ above (venv → pip upgrade → install → test run) in one step:
 powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
 ```
 
+### Windows dependency notes
+
+`requirements-windows.txt` is `requirements.txt` plus four packages the code
+imports but the original file never listed: **`faiss-cpu`** (the Windows
+wheel name for `faiss`, used by `correlation/closed_loop.py`; there is no
+Windows GPU wheel on PyPI), **`matplotlib`**, **`python-dotenv`**, and
+**`pyarrow`** (for the `.parquet` split cache). No packages were removed.
+
+`torch` installs the **CPU** build by default on Windows — `pip install
+torch` gives you `2.x+cpu` and `torch.cuda.is_available()` returns `False`
+even with a working NVIDIA driver. For GPU training you must install from
+PyTorch's CUDA index explicitly:
+
+```powershell
+pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements-windows.txt
+```
+
+Pick the CUDA index to match your GPU's compute capability:
+
+| GPU generation | Compute capability | Index URL |
+|---|---|---|
+| Blackwell (RTX 50-series, e.g. 5070) | `sm_120` | `.../whl/cu128` or newer — **cu124 and older will not work** |
+| Ada / Ampere (RTX 40/30-series) | `sm_89` / `sm_86` | `.../whl/cu124` |
+
+Verify with:
+
+```powershell
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+Two notes from doing this on an RTX 5070:
+
+- Installing the CUDA wheel may **downgrade** `torch` (the cu128 index
+  lagged the default index by two minor versions). This is expected.
+- It also pulls a newer `fsspec` than `datasets` allows, printing a
+  dependency-conflict warning. Re-pin afterwards, then confirm the
+  environment is clean:
+
+  ```powershell
+  pip install "fsspec[http]<=2026.6.0"
+  pip check
+  ```
+
+`pick_device()` returns `cuda` when available and falls back to `cpu` on
+Windows (MPS is macOS-only and is now gated behind `platform.system()`).
+
 ## Running everything
 
 Every command below assumes the venv is active (`.\.venv\Scripts\Activate.ps1`)
@@ -552,53 +599,6 @@ environment variables:
 $env:SECUREAGENTNET_CSV = "C:\path\to\consolidated_dataset.csv"
 python scripts\generate_report_artifacts.py
 ```
-
-### Windows dependency notes
-
-`requirements-windows.txt` is `requirements.txt` plus four packages the code
-imports but the original file never listed: **`faiss-cpu`** (the Windows
-wheel name for `faiss`, used by `correlation/closed_loop.py`; there is no
-Windows GPU wheel on PyPI), **`matplotlib`**, **`python-dotenv`**, and
-**`pyarrow`** (for the `.parquet` split cache). No packages were removed.
-
-`torch` installs the **CPU** build by default on Windows — `pip install
-torch` gives you `2.x+cpu` and `torch.cuda.is_available()` returns `False`
-even with a working NVIDIA driver. For GPU training you must install from
-PyTorch's CUDA index explicitly:
-
-```powershell
-pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128
-pip install -r requirements-windows.txt
-```
-
-Pick the CUDA index to match your GPU's compute capability:
-
-| GPU generation | Compute capability | Index URL |
-|---|---|---|
-| Blackwell (RTX 50-series, e.g. 5070) | `sm_120` | `.../whl/cu128` or newer — **cu124 and older will not work** |
-| Ada / Ampere (RTX 40/30-series) | `sm_89` / `sm_86` | `.../whl/cu124` |
-
-Verify with:
-
-```powershell
-python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-```
-
-Two notes from doing this on an RTX 5070:
-
-- Installing the CUDA wheel may **downgrade** `torch` (the cu128 index
-  lagged the default index by two minor versions). This is expected.
-- It also pulls a newer `fsspec` than `datasets` allows, printing a
-  dependency-conflict warning. Re-pin afterwards, then confirm the
-  environment is clean:
-
-  ```powershell
-  pip install "fsspec[http]<=2026.6.0"
-  pip check
-  ```
-
-`pick_device()` returns `cuda` when available and falls back to `cpu` on
-Windows (MPS is macOS-only and is now gated behind `platform.system()`).
 
 ### Training from scratch
 
