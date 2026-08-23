@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import platform
 from pathlib import Path
 
 import numpy as np
@@ -67,8 +68,13 @@ def make_collate_fn(tokenizer, max_length: int):
 def pick_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
+    # MPS only exists on macOS. On Windows/Linux builds of torch the
+    # `backends.mps` attribute may be absent entirely (older wheels) or
+    # present-but-False, so probe rather than assume either shape.
+    if platform.system() == "Darwin":
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return torch.device("mps")
     return torch.device("cpu")
 
 

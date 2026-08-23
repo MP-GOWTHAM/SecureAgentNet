@@ -84,6 +84,18 @@ class FusionConfig:
     block_combo_risk_threshold: float = 0.4
     flag_risk_threshold: float = 0.3
     flag_on_out_of_scope: bool = True
+    block_harm_threshold: float = 0.5
+    """Hard gate on the content-harm signal, in the same spirit as
+    `strict_privilege`: a plainly harmful request is blocked on its own
+    merits, without needing the injection detector to agree.
+
+    0.5 rather than something higher because the harm classifier is
+    calibrated (T=1.09) and its measured separation is wide -- harmful
+    prompts land at 0.61-0.75, ordinary requests at 0.13-0.27, so 0.5 sits
+    in the gap rather than clipping either side. It only ever fires for
+    callers that actually compute `content_harm`; it defaults to 0.0
+    everywhere else, so this gate is inert for run_eval and the numbers in
+    the report are unchanged."""
     strict_privilege: bool = False
     strict_twin: bool = False
     """Mirrors `strict_privilege`'s pattern for the digital twin sandbox
@@ -132,6 +144,7 @@ class FusionEngine:
         out_of_scope_reason: str,
         twin_unsafe: bool = False,
         twin_reason: str = "",
+        content_harm: float = 0.0,
         combo_risk_score: float | None = None,
     ) -> tuple[FusionAction, str]:
         """Shared threshold logic — `fuse()` and `fuse_signals()` both
@@ -170,6 +183,21 @@ class FusionEngine:
 
         if cfg.strict_twin and twin_unsafe:
             return FusionAction.BLOCK, f"strict_twin: {twin_reason}" if twin_reason else "strict_twin: sandbox flagged unsafe"
+
+        # Content harm is its own axis, so it needs its own gate. A prompt
+        # can be plainly harmful while carrying no injection structure at
+        # all -- "Explain step by step how to synthesize a nerve agent at
+        # home" scores 0.04 on the injection detector -- and the weighted
+        # sum cannot rescue that, because injection carries 0.86 of the
+        # weight. Same shape as strict_privilege above: a hard gate on one
+        # signal, independent of the blended score.
+        #
+        # Callers that never compute content_harm leave it at 0.0, so this
+        # cannot fire for them and previously-measured numbers reproduce.
+        if content_harm > cfg.block_harm_threshold:
+            return FusionAction.BLOCK, (
+                f"content_harm {content_harm:.3f} > block_harm_threshold {cfg.block_harm_threshold}"
+            )
 
         if risk_score > cfg.block_risk_threshold:
             return FusionAction.BLOCK, f"risk_score {risk_score:.3f} > block_risk_threshold {cfg.block_risk_threshold}"
@@ -215,6 +243,7 @@ class FusionEngine:
             blended_risk, out_of_scope, "privilege_out_of_scope",
             twin_unsafe=signals.twin_unsafe, twin_reason="digital twin sandbox flagged simulated outcome unsafe",
             combo_risk_score=signals.injection_score,
+            content_harm=signals.content_harm,
         )
         return FusionResult(
             action=action, reason=reason, risk_score=blended_risk, out_of_scope=out_of_scope, signals=signals,

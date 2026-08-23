@@ -55,6 +55,7 @@ def run_evaluation(
     detection_threshold: float = DEFAULT_DETECTION_THRESHOLD,
     strict_privilege: bool = False,
     max_examples: int | None = None,
+    block_risk_threshold: float | None = None,
 ) -> dict:
     device = pick_device()
     logger.info("Using device: %s", device)
@@ -77,7 +78,17 @@ def run_evaluation(
     credential_by_role = {
         role: issue_credential(role, ttl_seconds=CREDENTIAL_TTL_SECONDS, now=EVAL_NOW) for role in ROLES
     }
-    fusion_engine = FusionEngine(FusionConfig(strict_privilege=strict_privilege))
+    # block_risk_threshold defaults to FusionConfig's 0.85, which was set
+    # against DistilBERT's uncalibrated scores (they sit near 1.0 for
+    # anything it flags). A temperature-calibrated detector puts genuine
+    # attacks around 0.7-0.9, so 0.85 blocks far fewer of them; override
+    # with the value scripts/tune_block_threshold.py selects on validation.
+    fusion_kwargs = {"strict_privilege": strict_privilege}
+    if block_risk_threshold is not None:
+        fusion_kwargs["block_risk_threshold"] = block_risk_threshold
+        fusion_kwargs["block_combo_risk_threshold"] = max(0.05, block_risk_threshold - 0.45)
+        logger.info("block_risk_threshold overridden to %.2f", block_risk_threshold)
+    fusion_engine = FusionEngine(FusionConfig(**fusion_kwargs))
 
     results = [
         run_pipeline(
@@ -138,6 +149,9 @@ def main():
     parser.add_argument("--detection-threshold", type=float, default=DEFAULT_DETECTION_THRESHOLD)
     parser.add_argument("--strict-privilege", action="store_true", help="Fusion engine always blocks out-of-scope calls")
     parser.add_argument("--max-examples", type=int, default=None)
+    parser.add_argument("--block-risk-threshold", type=float, default=None,
+                        help="override FusionConfig's 0.85, which assumes uncalibrated scores; "
+                             "see scripts/tune_block_threshold.py")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
@@ -147,6 +161,7 @@ def main():
         detection_threshold=args.detection_threshold,
         strict_privilege=args.strict_privilege,
         max_examples=args.max_examples,
+        block_risk_threshold=args.block_risk_threshold,
     )
     print_comparison_table(metrics_by_method)
 

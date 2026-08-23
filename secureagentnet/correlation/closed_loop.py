@@ -22,9 +22,12 @@ import os
 
 # Must be set before faiss and torch have both loaded their native OpenMP
 # runtimes in the same process, or importing/using both reliably segfaults
-# on macOS (observed directly running this project's own test suite). Set
-# here, at the top of the one module that imports faiss, so any entrypoint
-# that pulls this module in gets the fix regardless of import order.
+# on macOS (observed directly running this project's own test suite). The
+# same duplicate-runtime hazard exists on Windows, where torch ships
+# libiomp5md.dll and the faiss-cpu wheel links its own OpenMP, so the flag
+# stays unconditional rather than macOS-gated. Set here, at the top of the
+# one module that imports faiss, so any entrypoint that pulls this module
+# in gets the fix regardless of import order.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 

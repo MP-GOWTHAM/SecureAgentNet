@@ -4,7 +4,19 @@ import json
 import logging
 import sys
 
-sys.path.insert(0, "/Users/gowtham/Desktop/secureagentnet")
+import os
+from pathlib import Path
+import tempfile
+
+# Repo root, resolved from this file rather than hardcoded: scripts/x.py -> up 1.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+# Dataset CSV is not in the repo; override with SECUREAGENTNET_CSV.
+DEFAULT_CSV = REPO_ROOT / "data" / "consolidated_dataset.csv"
+# Scratch dir for intermediate run artifacts (was /tmp on macOS).
+RUN_DIR = Path(os.environ.get("SECUREAGENTNET_RUN_DIR", Path(tempfile.gettempdir()) / "secureagentnet_run"))
+RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("run_track_b_v3")
@@ -15,11 +27,11 @@ from secureagentnet.detector.model import InjectionRiskModel, load_tokenizer
 from secureagentnet.detector.train import pick_device
 from secureagentnet.eval.online_retrain import OnlineRetrainingOrchestrator, run_full_track_b_cycle
 
-CSV_PATH = "/Users/gowtham/Downloads/dataset/consolidated_dataset.csv"
-BASE_OUTPUT_DIR = "/Users/gowtham/Desktop/secureagentnet/secureagentnet/data/models"
+CSV_PATH = os.environ.get("SECUREAGENTNET_CSV", str(DEFAULT_CSV))
+BASE_OUTPUT_DIR = str(REPO_ROOT / "secureagentnet" / "data" / "models")
 V2_MODEL_DIR = f"{BASE_OUTPUT_DIR}/v2"
 
-with open("/tmp/secureagentnet_run/evasions.json") as f:
+with open(RUN_DIR / "evasions.json", encoding="utf-8") as f:
     evasions = json.load(f)
 logger.info("Loaded %d real evasions found against v2", len(evasions))
 

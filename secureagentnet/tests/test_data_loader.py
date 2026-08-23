@@ -127,7 +127,7 @@ def test_build_splits_dedups_within_role(monkeypatch, tmp_path):
 def _write_consolidated_csv(path, rows):
     pd.DataFrame(
         rows, columns=["text", "label", "attack_type", "original_attack_type", "original_text", "source_dataset", "split"]
-    ).to_csv(path, index=False)
+    ).to_csv(path, index=False, encoding="utf-8")
 
 
 def test_build_splits_from_csv_isolates_qualifire_holdout(tmp_path):

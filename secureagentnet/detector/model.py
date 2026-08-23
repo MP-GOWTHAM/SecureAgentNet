@@ -93,14 +93,30 @@ class InjectionRiskModel(nn.Module):
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         torch.save(self.state_dict(), save_dir / "model.pt")
-        with open(save_dir / "config.json", "w") as f:
+        with open(save_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump(asdict(self.config), f, indent=2)
 
     @classmethod
-    def load(cls, save_dir: str | Path, map_location: str | None = None) -> "InjectionRiskModel":
+    def load(cls, save_dir: str | Path, map_location: str | None = None):
+        """Load a checkpoint from `save_dir`.
+
+        Dispatches on the config's `kind` field so a phase-2 ensemble
+        checkpoint loads through the same call site as a DistilBERT one.
+        Checkpoints written before `kind` existed have no such key and are
+        treated as DistilBERT, so old checkpoints keep loading unchanged.
+        """
         save_dir = Path(save_dir)
-        with open(save_dir / "config.json") as f:
-            config = InjectionRiskModelConfig(**json.load(f))
+        with open(save_dir / "config.json", encoding="utf-8") as f:
+            raw = json.load(f)
+        if raw.get("kind") == "ensemble":
+            from .ensemble import EnsembleInjectionRiskModel
+
+            return EnsembleInjectionRiskModel.load(save_dir, map_location=map_location)
+        if raw.get("kind") == "combined":
+            from .combined import CombinedRiskModel
+
+            return CombinedRiskModel.load(save_dir, map_location=map_location)
+        config = InjectionRiskModelConfig(**raw)
         model = cls(config)
         state_dict = torch.load(save_dir / "model.pt", map_location=map_location)
         model.load_state_dict(state_dict)

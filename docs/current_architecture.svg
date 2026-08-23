@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 620" width="1180" height="620" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="aL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .ttl   { font-size: 21px; font-weight: 700; fill: #0f172a; }
+      .sub   { font-size: 12.5px; fill: #64748b; }
+      .boxlb { font-size: 14px; font-weight: 650; fill: #0f172a; }
+      .small { font-size: 11.5px; fill: #475569; }
+      .tiny  { font-size: 10.5px; fill: #64748b; }
+      .bad   { font-size: 11px; font-weight: 600; fill: #b91c1c; }
+      .api   { font-size: 11.5px; font-family: Consolas, monospace; fill: #1d4ed8; }
+      .cur   { fill: #f8fafc; stroke: #64748b; stroke-width: 1.5; }
+      .old   { fill: #f1f5f9; stroke: #94a3b8; stroke-width: 1.4; stroke-dasharray: 5 3; }
+      .warn  { fill: #fef2f2; stroke: #dc2626; stroke-width: 1.4; }
+      .ln    { stroke: #475569; stroke-width: 1.6; fill: none; }
+      .lnL   { stroke: #94a3b8; stroke-width: 1.4; fill: none; }
+    </style>
+  </defs>
+  <rect width="1180" height="620" fill="#ffffff"/>
+
+  <text x="40" y="40" class="ttl">Current detector — DistilBERT encoder + single-logit head</text>
+  <text x="40" y="61" class="sub">secureagentnet/detector/model.py — one pretrained model, mean pooling, uncalibrated threshold</text>
+
+  <!-- pipeline column -->
+  <rect x="60" y="92" width="330" height="46" rx="7" class="cur"/>
+  <text x="225" y="112" class="boxlb" text-anchor="middle">Input prompt / tool output</text>
+  <text x="225" y="128" class="tiny" text-anchor="middle">max_length = 256</text>
+  <path d="M 225 138 L 225 162" class="ln" marker-end="url(#a)"/>
+
+  <rect x="60" y="164" width="330" height="60" rx="7" class="cur"/>
+  <text x="225" y="185" class="boxlb" text-anchor="middle">WordPiece tokenizer (uncased)</text>
+  <text x="225" y="203" class="tiny" text-anchor="middle">AutoTokenizer, distilbert-base-uncased</text>
+  <text x="225" y="218" class="tiny" text-anchor="middle">lowercases + strips accents</text>
+  <path d="M 225 224 L 225 248" class="ln" marker-end="url(#a)"/>
+
+  <rect x="60" y="250" width="330" height="62" rx="7" class="cur"/>
+  <text x="225" y="271" class="boxlb" text-anchor="middle">DistilBERT-base encoder</text>
+  <text x="225" y="289" class="tiny" text-anchor="middle">6 layers · hidden 768 · pretrained</text>
+  <text x="225" y="304" class="tiny" text-anchor="middle">fine-tuned on the 4-source merge</text>
+  <path d="M 225 312 L 225 336" class="ln" marker-end="url(#a)"/>
+
+  <rect x="60" y="338" width="330" height="58" rx="7" class="warn"/>
+  <text x="225" y="359" class="boxlb" text-anchor="middle">mean pooling over non-pad tokens</text>
+  <text x="225" y="377" class="tiny" text-anchor="middle">_pool() — sum(h · mask) / count</text>
+  <text x="225" y="391" class="bad" text-anchor="middle">single 768-d vector</text>
+  <path d="M 225 396 L 225 420" class="ln" marker-end="url(#a)"/>
+
+  <rect x="60" y="422" width="330" height="58" rx="7" class="cur"/>
+  <text x="225" y="443" class="boxlb" text-anchor="middle">dropout → Linear(768 → 1)</text>
+  <text x="225" y="461" class="api" text-anchor="middle">forward() → logit</text>
+  <text x="225" y="475" class="tiny" text-anchor="middle">BCEWithLogitsLoss during training</text>
+  <path d="M 225 480 L 225 504" class="ln" marker-end="url(#a)"/>
+
+  <rect x="60" y="506" width="330" height="54" rx="7" class="warn"/>
+  <text x="225" y="527" class="boxlb" text-anchor="middle">sigmoid → risk_score</text>
+  <text x="225" y="545" class="bad" text-anchor="middle">no calibration — thresholded at 0.5</text>
+
+  <!-- embed branch -->
+  <path d="M 390 367 L 470 367" class="lnL" marker-end="url(#aL)"/>
+  <rect x="472" y="340" width="250" height="54" rx="7" class="old"/>
+  <text x="597" y="361" class="api" text-anchor="middle">embed() → 768</text>
+  <text x="597" y="379" class="tiny" text-anchor="middle">same pooled vector → FAISS index</text>
+
+  <!-- failure panel -->
+  <rect x="760" y="92" width="380" height="468" rx="8" class="warn"/>
+  <text x="950" y="118" class="boxlb" text-anchor="middle">Measured failure modes</text>
+
+  <text x="782" y="150" class="bad">1 · Filler dilution evades</text>
+  <text x="782" y="168" class="tiny">A short injection inside 250 tokens of benign</text>
+  <text x="782" y="183" class="tiny">filler is averaged away by mean pooling.</text>
+  <text x="782" y="200" class="small">v3 scores it 0.0721 → ALLOW</text>
+
+  <text x="782" y="232" class="bad">2 · Obfuscation splinters the tokens</text>
+  <text x="782" y="250" class="tiny">"Thank. you. for." and zero-width spaces</text>
+  <text x="782" y="265" class="tiny">break WordPiece into unrecognizable pieces.</text>
+  <text x="782" y="282" class="small">8 real evasions found against v2</text>
+
+  <text x="782" y="314" class="bad">3 · Normalization erases the evidence</text>
+  <text x="782" y="332" class="tiny">Uncased + accent-stripping removes the</text>
+  <text x="782" y="347" class="tiny">homoglyph/fullwidth signal that marks an attack.</text>
+
+  <text x="782" y="379" class="bad">4 · Large generalization gap</text>
+  <text x="782" y="397" class="tiny">One model, one inductive bias, no ensemble</text>
+  <text x="782" y="412" class="tiny">diversity to average out its blind spots.</text>
+  <text x="782" y="429" class="small">val AUC 0.998  vs  holdout AUC 0.747</text>
+
+  <text x="782" y="461" class="bad">5 · Poor precision on unseen data</text>
+  <text x="782" y="479" class="tiny">Scores are ranked well but never calibrated,</text>
+  <text x="782" y="494" class="tiny">so the 0.5 cut is arbitrary.</text>
+  <text x="782" y="511" class="small">FPR 0.439 · precision 0.581</text>
+  <text x="782" y="534" class="tiny">→ utility preservation capped at 0.579</text>
+</svg>

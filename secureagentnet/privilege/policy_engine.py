@@ -340,7 +340,10 @@ class AuditLog:
         self.entries.append(entry)
         self.hashes.append(entry_hash)
         if self.path:
-            with open(self.path, "a") as f:
+            # encoding/newline pinned explicitly: Windows would otherwise use
+            # the ANSI codepage (UnicodeEncodeError on non-ASCII prompt text)
+            # and translate "\n" to "\r\n", corrupting the JSONL framing.
+            with open(self.path, "a", encoding="utf-8", newline="\n") as f:
                 record = {"prev_hash": prev_hash, "hash": entry_hash, **json.loads(entry.model_dump_json())}
                 f.write(json.dumps(record) + "\n")
         return entry_hash
@@ -380,7 +383,7 @@ class PolicyEngine:
         directory = Path(directory)
         policies: dict[str, RolePolicy] = {}
         for path in sorted(directory.glob("*.yaml")) + sorted(directory.glob("*.yml")):
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             policy = RolePolicy.model_validate(raw)
             if policy.role in policies:

@@ -220,6 +220,9 @@ rule-based path on the endpoint's own timeouts.
 process reliably segfaults on macOS (OpenMP runtime conflict) —
 `correlation/closed_loop.py` sets `KMP_DUPLICATE_LIB_OK`/`OMP_NUM_THREADS`
 at import time as a fix; `tests/conftest.py` sets the same as a backstop.
+The same duplicate-OpenMP hazard exists on Windows (torch ships
+`libiomp5md.dll`, the `faiss-cpu` wheel links its own), so those two
+environment variables stay set unconditionally rather than macOS-gated.
 
 ## §6 evaluation deliverables
 
@@ -305,3 +308,136 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pytest secureagentnet/tests
 ```
+
+## Windows Installation
+
+The project runs natively on Windows 10/11 — no WSL, Docker, or Unix shell
+required. `pyproject.toml` requires Python **3.11+**; the commands below use
+3.13, which is what this port was verified against.
+
+### PowerShell
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements-windows.txt
+```
+
+If `Activate.ps1` is blocked by execution policy, either run
+`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` for the current
+session, or use the CMD activation script below.
+
+### Command Prompt
+
+```cmd
+py -3.13 -m venv .venv
+.venv\Scripts\activate.bat
+python -m pip install --upgrade pip
+pip install -r requirements-windows.txt
+```
+
+### Scripted setup
+
+`scripts/setup_windows.ps1` and `scripts/setup_windows.bat` do all of the
+above (venv → pip upgrade → install → test run) in one step:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
+```
+
+### Run the tests
+
+```powershell
+pytest secureagentnet/tests
+```
+
+### Start the web application
+
+```powershell
+python -m secureagentnet.webapp.app
+```
+
+Then open <http://127.0.0.1:5050>. The model directory now defaults to
+`secureagentnet\data\models\v3` **relative to the repo**, so no path editing
+is needed; `SECUREAGENTNET_MODEL_DIR` still overrides it.
+
+### Run the evaluation
+
+```powershell
+python -m secureagentnet.eval.run_eval --csv C:\path\to\consolidated_dataset.csv
+python -m secureagentnet.eval.run_eval --csv C:\path\to\consolidated_dataset.csv --strict-privilege
+```
+
+### Regenerate the splits
+
+```powershell
+python -m secureagentnet.detector.data_loader
+python -m secureagentnet.detector.data_loader --csv C:\path\to\consolidated_dataset.csv
+```
+
+### Scripts under `scripts/`
+
+The one-off analysis scripts no longer hardcode absolute macOS paths. They
+resolve the repo root from their own location and read two optional
+environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SECUREAGENTNET_CSV` | `<repo>\data\consolidated_dataset.csv` | consolidated dataset CSV |
+| `SECUREAGENTNET_RUN_DIR` | `%TEMP%\secureagentnet_run` | scratch dir for intermediate artifacts (was `/tmp`) |
+
+```powershell
+$env:SECUREAGENTNET_CSV = "C:\path\to\consolidated_dataset.csv"
+python scripts\generate_report_artifacts.py
+```
+
+### Windows dependency notes
+
+`requirements-windows.txt` is `requirements.txt` plus four packages the code
+imports but the original file never listed: **`faiss-cpu`** (the Windows
+wheel name for `faiss`, used by `correlation/closed_loop.py`; there is no
+Windows GPU wheel on PyPI), **`matplotlib`**, **`python-dotenv`**, and
+**`pyarrow`** (for the `.parquet` split cache). No packages were removed.
+
+`torch` installs the **CPU** build by default on Windows — `pip install
+torch` gives you `2.x+cpu` and `torch.cuda.is_available()` returns `False`
+even with a working NVIDIA driver. For GPU training you must install from
+PyTorch's CUDA index explicitly:
+
+```powershell
+pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements-windows.txt
+```
+
+Pick the CUDA index to match your GPU's compute capability:
+
+| GPU generation | Compute capability | Index URL |
+|---|---|---|
+| Blackwell (RTX 50-series, e.g. 5070) | `sm_120` | `.../whl/cu128` or newer — **cu124 and older will not work** |
+| Ada / Ampere (RTX 40/30-series) | `sm_89` / `sm_86` | `.../whl/cu124` |
+
+Verify with:
+
+```powershell
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+Two notes from doing this on an RTX 5070:
+
+- Installing the CUDA wheel may **downgrade** `torch` (the cu128 index
+  lagged the default index by two minor versions). This is expected.
+- It also pulls a newer `fsspec` than `datasets` allows, printing a
+  dependency-conflict warning. Re-pin afterwards, then confirm the
+  environment is clean:
+
+  ```powershell
+  pip install "fsspec[http]<=2026.6.0"
+  pip check
+  ```
+
+`pick_device()` returns `cuda` when available and falls back to `cpu` on
+Windows (MPS is macOS-only and is now gated behind `platform.system()`).
+
+`pick_device()` picks `cuda` when available and falls back to `cpu` on
+Windows (MPS is macOS-only and is now gated behind `platform.system()`).

@@ -8,7 +8,19 @@ import json
 import logging
 import sys
 
-sys.path.insert(0, "/Users/gowtham/Desktop/secureagentnet")
+import os
+from pathlib import Path
+import tempfile
+
+# Repo root, resolved from this file rather than hardcoded: scripts/x.py -> up 1.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+# Dataset CSV is not in the repo; override with SECUREAGENTNET_CSV.
+DEFAULT_CSV = REPO_ROOT / "data" / "consolidated_dataset.csv"
+# Scratch dir for intermediate run artifacts (was /tmp on macOS).
+RUN_DIR = Path(os.environ.get("SECUREAGENTNET_RUN_DIR", Path(tempfile.gettempdir()) / "secureagentnet_run"))
+RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("generate_report_artifacts")
@@ -32,10 +44,10 @@ from secureagentnet.privilege.policy_engine import POLICIES_DIR, PolicyEngine, T
 from secureagentnet.simulate.agent_env import ROLES, run_pipeline
 from datetime import datetime, timezone
 
-CSV_PATH = "/Users/gowtham/Downloads/dataset/consolidated_dataset.csv"
-V1_DIR = "/Users/gowtham/Desktop/secureagentnet/secureagentnet/data/models/injection_detector"
-V3_DIR = "/Users/gowtham/Desktop/secureagentnet/secureagentnet/data/models/v3"
-FIG_DIR = "/Users/gowtham/Desktop/secureagentnet/secureagentnet/reports/figures"
+CSV_PATH = os.environ.get("SECUREAGENTNET_CSV", str(DEFAULT_CSV))
+V1_DIR = str(REPO_ROOT / "secureagentnet" / "data" / "models" / "injection_detector")
+V3_DIR = str(REPO_ROOT / "secureagentnet" / "data" / "models" / "v3")
+FIG_DIR = str(REPO_ROOT / "secureagentnet" / "reports" / "figures")
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 device = pick_device()
@@ -156,7 +168,7 @@ latency_report = {
 }
 logger.info("LATENCY: %s", json.dumps(latency_report, indent=2))
 
-with open("/Users/gowtham/Desktop/secureagentnet/secureagentnet/reports/latency.json", "w") as f:
+with open(REPO_ROOT / "secureagentnet" / "reports" / "latency.json", "w", encoding="utf-8") as f:
     json.dump(latency_report, f, indent=2)
 
 # ============================================================
@@ -199,14 +211,18 @@ fig, ax = plt.subplots(figsize=(6, 4.5))
 versions = ["v1\n(original)", "v3\n(after Track B\non real evasions)"]
 values = [overall_v1, overall_v3]
 bars = ax.bar(versions, values, color=["#7f8c8d", "#27ae60"])
-ax.set_ylabel("Mean evasion rate (same red-team protocol, both versions)")
+ax.set_ylabel("Mean evasion rate\n(same red-team protocol, both versions)")
 ax.set_title("Figure 2: Evasion rate across detector versions")
 for bar, v in zip(bars, values):
     ax.text(bar.get_x() + bar.get_width() / 2, v + 0.01, f"{v:.3f}", ha="center")
-ax.set_ylim(0, max(values) * 1.3 + 0.05)
-note = "v2 not shown: its checkpoint was overwritten during this session's\nTrack B run before this comparison was built (see README)."
-ax.text(0.5, -0.18, note, transform=ax.transAxes, ha="center", fontsize=8, style="italic")
-fig.tight_layout()
+ax.set_ylim(0, max(max(values) * 1.3 + 0.05, 0.02))
+note = ("v2 omitted: the v1->v2 Track B cycle found 0 evasions, so v2 differs from v1\n"
+        "only by retraining noise. The 8 real evasions were found against v2 with the\n"
+        "strengthened generator and drove the v2->v3 cycle.")
+# Reserve the bottom strip for the note first, then draw it in that strip, so
+# it can't collide with the multi-line x tick labels (which tight_layout sizes).
+fig.tight_layout(rect=(0, 0.16, 1, 1))
+fig.text(0.5, 0.02, note, ha="center", va="bottom", fontsize=7.5, style="italic")
 fig.savefig(f"{FIG_DIR}/figure2_evasion_rate_per_version.png", dpi=150)
 plt.close(fig)
 logger.info("Saved figure2_evasion_rate_per_version.png")
@@ -237,7 +253,7 @@ for thr in thresholds:
     frontier.append({"threshold": thr, "asr": m.asr, "utility": m.utility_preservation})
     logger.info("threshold=%.1f asr=%.4f utility=%.4f", thr, m.asr, m.utility_preservation)
 
-with open("/Users/gowtham/Desktop/secureagentnet/secureagentnet/reports/frontier.json", "w") as f:
+with open(REPO_ROOT / "secureagentnet" / "reports" / "frontier.json", "w", encoding="utf-8") as f:
     json.dump(frontier, f, indent=2)
 
 fig, ax = plt.subplots(figsize=(7, 5))

@@ -15,6 +15,10 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+
+# Repo root: .../secureagentnet/webapp/app.py -> up 3.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -22,7 +26,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+    load_dotenv(REPO_ROOT / ".env")
 except ImportError:
     pass  # TOKENROUTER_* just won't be set -- LLM red-teaming falls back to rule-based
 
@@ -40,7 +44,10 @@ from secureagentnet.privilege.memory_protection import MemoryProtectionLayer, Me
 from secureagentnet.privilege.policy_engine import POLICIES_DIR, PolicyEngine, ToolCallRequest, issue_credential
 from secureagentnet.simulate.agent_env import MEMORY_WRITE_TOOLS, ROLE_SOURCE_TYPE, ROLES, _build_provenance_tag
 from secureagentnet.simulate.behavioral_anomaly import ActionSequence, BehavioralAnomalyDetector
-from secureagentnet.simulate.digital_twin import DigitalTwinSandbox
+# DigitalTwinSandbox is deliberately not imported: the twin is no longer
+# part of the webapp's fused decision. simulate/digital_twin.py and its
+# tests remain, and eval/run_eval.py never used the twin either, so this
+# only removes it from the live product surface.
 from secureagentnet.provenance.tracker import ProvenanceTracker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -48,8 +55,12 @@ logger = logging.getLogger("webapp")
 
 MODEL_DIR = os.environ.get(
     "SECUREAGENTNET_MODEL_DIR",
-    "/Users/gowtham/Desktop/secureagentnet/secureagentnet/data/models/v3",
+    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "v3"),
 )
+HARM_MODEL_DIR = Path(os.environ.get(
+    "SECUREAGENTNET_HARM_MODEL_DIR",
+    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "harm_detector"),
+))
 CREDENTIAL_TTL_SECONDS = 24 * 3600
 
 # Sensible default (tool_name, resource) per role — the tool call that
@@ -167,9 +178,40 @@ class Pipeline:
         self.provenance_tracker = ProvenanceTracker()
         self.memory_protection = MemoryProtectionLayer()
         self.behavioral_detector = BehavioralAnomalyDetector()
-        self.digital_twin = DigitalTwinSandbox()
         self.redteam_sessions: dict[str, dict] = {}
+
+        # Content-harm classifier: a second, independent axis. The
+        # injection detector cannot see a plainly harmful request that
+        # carries no instruction-override framing (measured: "synthesize a
+        # nerve agent at home" scores 0.04 as an injection, 0.68 as harm).
+        # Optional -- if the checkpoint is absent the signal stays 0.0 and
+        # every decision is exactly what it was before.
+        self.harm_model = None
+        self.harm_tokenizer = None
+        if HARM_MODEL_DIR.exists() and (HARM_MODEL_DIR / "config.json").exists():
+            try:
+                self.harm_model = InjectionRiskModel.load(
+                    str(HARM_MODEL_DIR), map_location=str(self.device)).to(self.device)
+                self.harm_model.eval()
+                self.harm_tokenizer = load_tokenizer(self.harm_model.config.model_name)
+                logger.info("content-harm classifier loaded from %s", HARM_MODEL_DIR)
+            except Exception as exc:  # noqa: BLE001 - never let this break startup
+                logger.warning("content-harm classifier unavailable (%s); signal stays 0.0", exc)
+        else:
+            logger.info("no content-harm checkpoint at %s; signal stays 0.0", HARM_MODEL_DIR)
         logger.info("Pipeline ready on device %s.", self.device)
+
+    def harm_score(self, text: str) -> float:
+        """Content-harm probability, or 0.0 when no classifier is loaded."""
+        if self.harm_model is None:
+            return 0.0
+        enc = self.harm_tokenizer(
+            [text], padding=True, truncation=True,
+            max_length=self.harm_model.config.max_length, return_tensors="pt",
+        )
+        with torch.no_grad():
+            return float(self.harm_model.risk_score(
+                enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device))[0])
 
     def score(self, text: str) -> float:
         enc = self.tokenizer([text], padding=True, truncation=True, max_length=self.model.config.max_length, return_tensors="pt")
@@ -182,6 +224,58 @@ class Pipeline:
             vec = self.model.embed(enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device))[0]
         return vec.cpu().numpy()
 
+    def analyze_text_only(self, prompt: str) -> dict:
+        """Classify the text when no role keyword matched.
+
+        Previously an unmatched prompt was forced through DEFAULT_ROLE
+        ("email_agent"), which fabricated a tool call nobody asked for:
+        `send_email` to a fixed address. That invented action then failed
+        the digital twin ("recipient does not match any known contact")
+        and produced a behavioural anomaly of 1.0 — noise generated
+        entirely by the guess, on prompts as innocuous as "Summarize the
+        quarterly sales report".
+
+        With no role there is no agent action to govern, so only the text
+        can be judged. Privilege, digital twin, provenance and behavioural
+        analysis are skipped rather than fed a placeholder, and the fused
+        decision runs on the detector signal alone. RiskSignals' own
+        defaults are the neutral "nothing else is known" values
+        (source_trust 1.0, twin_unsafe False), so nothing is invented here.
+        """
+        risk_score = self.score(prompt)
+        harm = self.harm_score(prompt)
+        signals = RiskSignals(injection_score=risk_score, content_harm=harm)
+        fusion_result = self.fusion_engine.fuse_signals(signals)
+
+        if fusion_result.action == FusionAction.BLOCK:
+            conflict_message = f"Blocked on prompt content: {fusion_result.reason}"
+        elif fusion_result.action == FusionAction.FLAG:
+            conflict_message = f"Flagged on prompt content: {fusion_result.reason}"
+        else:
+            conflict_message = "No injection detected in the prompt."
+
+        return {
+            "action": fusion_result.action.value,
+            "proceeds": fusion_result.action != FusionAction.BLOCK,
+            "conflict_message": conflict_message,
+            "reason": fusion_result.reason,
+            "blended_risk_score": fusion_result.risk_score,
+            "raw_injection_score": risk_score,
+            # Flags the reduced analysis so the UI can say "not evaluated"
+            # instead of rendering defaults as if they were measurements.
+            "governance_evaluated": False,
+            "signals": {
+                "injection_score": signals.injection_score,
+                "content_harm": harm if self.harm_model is not None else None,
+                "behavior_anomaly": None,
+                "source_trust": None,
+                "privilege_out_of_scope": None,
+            },
+            "request": None,
+            "privilege_decision": None,
+            "memory_write_decision": None,
+        }
+
     def analyze(self, prompt: str, role: str, tool_name: str, resource: str | None, params: dict) -> dict:
         now = datetime.now(timezone.utc)
         request_obj = ToolCallRequest(tool_name=tool_name, resource=resource, params=params or {})
@@ -189,20 +283,26 @@ class Pipeline:
 
         risk_score = self.score(prompt)
         privilege_decision = self.policy_engine.authorize(credential, request_obj, now=now)
-        sandbox_result = self.digital_twin.run(request_obj)
 
         tag = _build_provenance_tag(role, request_obj, prompt)
         source_trust = self.provenance_tracker.trust_score(tag)
 
         anomaly = self.behavioral_detector.score(ActionSequence(role=role, tool_names=[tool_name]))
 
+        # Digital-twin sandbox intentionally not part of the fused signal
+        # here. The evaluation harness (eval/run_eval.py) never passed the
+        # twin either -- every ASR/C-ASR/utility number in the report was
+        # measured without it -- so leaving the twin out of the webapp's
+        # fusion aligns the live product with what was actually measured.
+        # `twin_unsafe` defaults to False on RiskSignals, so the twin's
+        # weight in adaptive_risk_engine (0.015) contributes zero.
         signals = RiskSignals(
             injection_score=risk_score,
             behavior_anomaly=anomaly.deviation_score,
             source_trust=source_trust,
             privilege_out_of_scope=privilege_decision.out_of_scope,
             session_history_risk=0.0,
-            twin_unsafe=not sandbox_result.safe,
+            content_harm=self.harm_score(prompt),
         )
         fusion_result = self.fusion_engine.fuse_signals(signals)
 
@@ -227,22 +327,18 @@ class Pipeline:
             "reason": fusion_result.reason,
             "blended_risk_score": fusion_result.risk_score,
             "raw_injection_score": risk_score,
+            "governance_evaluated": True,
             "signals": {
                 "injection_score": signals.injection_score,
+                "content_harm": signals.content_harm if self.harm_model is not None else None,
                 "behavior_anomaly": signals.behavior_anomaly,
                 "source_trust": signals.source_trust,
                 "privilege_out_of_scope": signals.privilege_out_of_scope,
-                "twin_unsafe": signals.twin_unsafe,
             },
             "privilege_decision": {
                 "allowed": privilege_decision.allowed,
                 "violation_type": privilege_decision.violation_type.value,
                 "reason": privilege_decision.reason,
-            },
-            "twin_result": {
-                "safe": sandbox_result.safe,
-                "notes": sandbox_result.safety_notes,
-                "outcome": sandbox_result.twin_outcome,
             },
             "memory_write_decision": (
                 {"outcome": memory_write_decision.outcome.value, "reason": memory_write_decision.reason}
@@ -330,19 +426,46 @@ class Pipeline:
         prompts the way a real multi-turn agent session would.
         """
         role, role_matched = detect_role(prompt)
-        action_defaults = ROLE_DEFAULT_ACTION[role]
-        analysis = self.analyze(
-            prompt, role, action_defaults["tool_name"], action_defaults["resource"], dict(action_defaults["params"]),
-        )
+        if role_matched:
+            action_defaults = ROLE_DEFAULT_ACTION[role]
+            analysis = self.analyze(
+                prompt, role, action_defaults["tool_name"], action_defaults["resource"],
+                dict(action_defaults["params"]),
+            )
+        else:
+            # No keyword matched: judge the text, do not invent an agent
+            # action to govern. See analyze_text_only().
+            analysis = self.analyze_text_only(prompt)
 
-        redteam = self.run_redteam(prompt, rounds, variants_per_round)
-        unlearn_result = self.unlearn(redteam["redteam_session_id"])
+        # Only red-team something the pipeline actually objected to.
+        # run_red_team_round treats its input as an attack by construction:
+        # any low-scoring variant is recorded via
+        # confirm_outcome(is_malicious=True) and written into the memory
+        # index. Running that over a benign prompt therefore labels benign
+        # text malicious and drags the calibration threshold down. This
+        # path auto-unlearns so the damage was transient, but it would
+        # persist if unlearn ever failed -- and an ALLOW at low risk has
+        # nothing worth probing anyway. Mirrors the rule the GUI already
+        # applies before offering its red-team button.
+        if analysis["action"] == FusionAction.ALLOW.value:
+            redteam = None
+            unlearn_result = None
+        else:
+            redteam = self.run_redteam(prompt, rounds, variants_per_round)
+            unlearn_result = self.unlearn(redteam["redteam_session_id"])
 
         return {
-            "detected_role": role,
+            # None, not DEFAULT_ROLE, when nothing matched -- reporting a
+            # role here while analyze_text_only() governed nothing would
+            # contradict /api/analyze and re-introduce the "silently became
+            # email_agent" confusion this path exists to avoid.
+            "detected_role": role if role_matched else None,
             "role_matched": role_matched,
             "analysis": analysis,
-            "redteam": {
+            # null when the verdict was ALLOW and no red-team ran, so a
+            # caller can tell "probed, found nothing" apart from "not
+            # probed" -- both would otherwise look like zero evasions.
+            "redteam": None if redteam is None else {
                 "total_evasions": redteam["total_evasions"],
                 "rounds": redteam["rounds"],
                 "threshold_before": redteam["threshold_before"],
@@ -364,7 +487,7 @@ def get_pipeline() -> Pipeline:
 
 @app.route("/")
 def index():
-    return send_from_directory(os.path.join(os.path.dirname(__file__), "static"), "index.html")
+    return send_from_directory(str(Path(__file__).resolve().parent / "static"), "index.html")
 
 
 @app.route("/api/roles")
@@ -412,6 +535,15 @@ def api_analyze():
     else:
         role, role_matched = detect_role(prompt)
 
+    # Nothing matched and the caller named no role: there is no agent
+    # action to govern, so classify the text instead of inventing a
+    # send_email to a fixed address. See Pipeline.analyze_text_only().
+    if not role_matched:
+        result = get_pipeline().analyze_text_only(prompt)
+        result["detected_role"] = None
+        result["role_matched"] = False
+        return jsonify(result)
+
     action_defaults = ROLE_DEFAULT_ACTION[role]
     tool_name = data.get("tool_name") or action_defaults["tool_name"]
     resource = data.get("resource", action_defaults["resource"])
@@ -450,11 +582,34 @@ def api_unlearn():
 @app.route("/api/status")
 def api_status():
     p = get_pipeline()
+    cfg = p.fusion_engine.config
+
+    # Which checkpoint is live. There are now several on disk (DistilBERT
+    # v1/v2/v3, the from-scratch ensembles, and the combined wrapper) and
+    # they behave very differently, so "which model am I looking at" is
+    # the first thing anyone needs from this screen.
+    model_name = Path(MODEL_DIR).name
+    model_kind = getattr(p.model.config, "kind", "distilbert")
+    members = list(getattr(p.model.config, "members", []) or [])
+
     return jsonify({
         "device": str(p.device),
         "calibration_threshold": p.calibration.threshold,
         "memory_index_size": len(p.memory_index),
         "active_redteam_sessions": len(p.redteam_sessions),
+        "model": {
+            "name": model_name,
+            "kind": model_kind,
+            "members": [Path(m).name for m in members],
+        },
+        # The UI draws these as markers on the risk meters, so a config
+        # change is reflected in the display instead of being hardcoded
+        # in two places that can drift apart.
+        "thresholds": {
+            "block": cfg.block_risk_threshold,
+            "flag": cfg.flag_risk_threshold,
+            "block_combo": cfg.block_combo_risk_threshold,
+        },
     })
 
 

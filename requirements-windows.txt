@@ -1,0 +1,43 @@
+# Windows dependency set for SecureAgentNet.
+#
+# Same package set as requirements.txt (nothing removed), plus the transitive
+# imports the code actually uses but requirements.txt never listed
+# (faiss, matplotlib, dotenv, pyarrow). Notes on Windows specifics are inline.
+
+# --- identical to requirements.txt -----------------------------------------
+# NOTE: on Windows this installs the CPU build. For GPU training install from
+# PyTorch's CUDA index FIRST (see README "Windows dependency notes"), e.g.
+#   pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128
+# Blackwell / RTX 50-series (sm_120) requires cu128 or newer; cu124 will not work.
+torch>=2.2
+transformers>=4.40
+datasets>=2.19
+huggingface_hub>=0.23
+pydantic>=2.7
+pyyaml>=6.0
+scikit-learn>=1.4
+pandas>=2.2
+click>=8.1
+pytest>=8.0
+numpy>=1.26
+flask>=3.0
+
+# --- imported by the code but missing from requirements.txt ----------------
+# correlation/closed_loop.py imports faiss. On Windows the wheel is published
+# as `faiss-cpu` (there is no GPU wheel for Windows on PyPI); the import name
+# stays `faiss`, so no code change is needed.
+faiss-cpu>=1.8
+
+# scripts/generate_report_artifacts.py imports matplotlib (Agg backend).
+matplotlib>=3.8
+
+# webapp/app.py optionally imports python-dotenv to read a local .env.
+python-dotenv>=1.0
+
+# detector/data_loader.py caches splits to .parquet via pandas.
+pyarrow>=15.0
+
+# eval/red_team.py's LLMAttackGenerator imports openai (OpenAI-compatible
+# TokenRouter endpoint). Lazily imported inside __init__, but two tests in
+# test_red_team.py construct the generator directly, so it is a real dep.
+openai>=1.30

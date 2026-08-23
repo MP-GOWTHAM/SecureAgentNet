@@ -351,7 +351,7 @@ def build_splits_from_csv(
     """
     csv_path = Path(csv_path)
     usecols = ["text", "label", "attack_type", "source_dataset", "split"]
-    df = pd.read_csv(csv_path, usecols=usecols)
+    df = pd.read_csv(csv_path, usecols=usecols, encoding="utf-8")
 
     df = df.dropna(subset=["text", "label"])
     df["text"] = df["text"].astype(str)

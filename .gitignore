@@ -11,3 +11,15 @@ secureagentnet/data/models/
 .env
 docs/node_modules/
 docs/~$*
+
+# Generated datasets (~191 MB). Rebuilt from Hugging Face by
+# scripts/build_consolidated_dataset.py, build_harm_dataset.py,
+# build_rebalanced_dataset.py and build_pooled_split_dataset.py — the
+# scripts are the reproducible artifact, the CSVs are not.
+data/
+
+# Working logs from training / eval runs.
+logs_*.txt
+
+# Scratch preview files.
+docs/_preview_*.pdf

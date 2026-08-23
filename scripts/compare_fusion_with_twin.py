@@ -19,7 +19,19 @@ that session's own turns.
 import logging
 import sys
 
-sys.path.insert(0, "/Users/gowtham/Desktop/secureagentnet")
+import os
+from pathlib import Path
+import tempfile
+
+# Repo root, resolved from this file rather than hardcoded: scripts/x.py -> up 1.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+# Dataset CSV is not in the repo; override with SECUREAGENTNET_CSV.
+DEFAULT_CSV = REPO_ROOT / "data" / "consolidated_dataset.csv"
+# Scratch dir for intermediate run artifacts (was /tmp on macOS).
+RUN_DIR = Path(os.environ.get("SECUREAGENTNET_RUN_DIR", Path(tempfile.gettempdir()) / "secureagentnet_run"))
+RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("compare_fusion_with_twin")
@@ -38,8 +50,8 @@ from secureagentnet.simulate.agent_env import ROLES, run_pipeline
 from secureagentnet.simulate.behavioral_anomaly import BehavioralAnomalyDetector
 from secureagentnet.simulate.digital_twin import DigitalTwinSandbox
 
-CSV_PATH = "/Users/gowtham/Downloads/dataset/consolidated_dataset.csv"
-V3_DIR = "/Users/gowtham/Desktop/secureagentnet/secureagentnet/data/models/v3"
+CSV_PATH = os.environ.get("SECUREAGENTNET_CSV", str(DEFAULT_CSV))
+V3_DIR = str(REPO_ROOT / "secureagentnet" / "data" / "models" / "v3")
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 device = pick_device()

@@ -205,7 +205,10 @@ def run_full_track_b_cycle(
         test_rows["attack_type"] = test_rows["category"]
         test_rows["source_dataset"] = "hf_csv2"
         test_rows["split"] = "test"
-        pd.concat([combined, test_rows], ignore_index=True).to_csv(combined_csv, index=False)
+        # encoding pinned: on Windows pandas would otherwise write this
+        # handoff CSV in the ANSI codepage while build_splits_from_csv reads
+        # it back as UTF-8, mangling (or failing on) non-ASCII attack text.
+        pd.concat([combined, test_rows], ignore_index=True).to_csv(combined_csv, index=False, encoding="utf-8")
 
         output_dir = Path(base_output_dir) / new_version
         result = run_train(csv_path=str(combined_csv), epochs=epochs, output_dir=output_dir)

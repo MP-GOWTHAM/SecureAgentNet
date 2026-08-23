@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 940" width="1180" height="940" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowLight" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .ttl   { font-size: 21px; font-weight: 700; fill: #0f172a; }
+      .sub   { font-size: 12.5px; fill: #64748b; }
+      .boxlb { font-size: 14px; font-weight: 650; fill: #0f172a; }
+      .small { font-size: 11.5px; fill: #475569; }
+      .tiny  { font-size: 10.5px; fill: #64748b; }
+      .fix   { font-size: 11px; font-weight: 600; fill: #b45309; }
+      .api   { font-size: 11.5px; font-family: Consolas, monospace; fill: #1d4ed8; }
+      .mono  { font-size: 11px; font-family: Consolas, monospace; fill: #475569; }
+      .newbox  { fill: #eff6ff; stroke: #2563eb; stroke-width: 1.6; }
+      .metabox { fill: #ecfdf5; stroke: #059669; stroke-width: 1.6; }
+      .oldbox  { fill: #f1f5f9; stroke: #94a3b8; stroke-width: 1.4; stroke-dasharray: 5 3; }
+      .plain   { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.3; }
+      .ln    { stroke: #475569; stroke-width: 1.6; fill: none; }
+      .lnL   { stroke: #94a3b8; stroke-width: 1.4; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="1180" height="940" fill="#ffffff"/>
+
+  <text x="40" y="40" class="ttl">SecureAgentNet — Phase 2: custom from-scratch ensemble detector</text>
+  <text x="40" y="61" class="sub">Drop-in replacement for InjectionRiskModel. Below the dashed line only the digital twin changed (removed from fusion).</text>
+
+  <!-- legend -->
+  <rect x="812" y="26" width="14" height="12" class="newbox"/>
+  <text x="832" y="36" class="tiny">new (phase 2)</text>
+  <rect x="812" y="46" width="14" height="12" class="metabox"/>
+  <text x="832" y="56" class="tiny">stacking layer</text>
+  <rect x="812" y="66" width="14" height="12" class="oldbox"/>
+  <text x="832" y="76" class="tiny">existing, untouched</text>
+
+  <!-- input -->
+  <rect x="380" y="86" width="420" height="42" rx="7" class="plain"/>
+  <text x="590" y="106" class="boxlb" text-anchor="middle">Input prompt / tool output</text>
+  <text x="590" y="121" class="tiny" text-anchor="middle">max_length = 256</text>
+  <path d="M 590 128 L 590 152" class="ln" marker-end="url(#arrow)"/>
+
+  <!-- tokenizer -->
+  <rect x="300" y="152" width="580" height="72" rx="7" class="newbox"/>
+  <text x="590" y="172" class="boxlb" text-anchor="middle">Custom byte-level BPE tokenizer (~16k merges) — no normalizer</text>
+  <text x="440" y="192" class="small" text-anchor="middle">one tokenisation, all branches</text>
+  <text x="740" y="192" class="small" text-anchor="middle">byte view rebuilt from ids in forward()</text>
+  <text x="590" y="212" class="fix" text-anchor="middle">keeps homoglyph / zero-width evidence instead of NFKC-erasing it</text>
+
+  <path d="M 400 224 L 190 254" class="ln" marker-end="url(#arrow)"/>
+  <path d="M 590 224 L 590 254" class="ln" marker-end="url(#arrow)"/>
+  <path d="M 780 224 L 990 254" class="ln" marker-end="url(#arrow)"/>
+
+  <!-- branch 1 -->
+  <rect x="40" y="256" width="300" height="176" rx="7" class="newbox"/>
+  <text x="190" y="278" class="boxlb" text-anchor="middle">① Char-CNN</text>
+  <text x="190" y="299" class="small" text-anchor="middle">byte embedding d=96 · 128 filters</text>
+  <text x="190" y="317" class="small" text-anchor="middle">Conv1d k=3 / 5 / 7, parallel</text>
+  <text x="190" y="335" class="small" text-anchor="middle">max-over-time pooling</text>
+  <line x1="70" y1="350" x2="310" y2="350" stroke="#bfdbfe" stroke-width="1"/>
+  <text x="190" y="369" class="fix" text-anchor="middle">counters obfuscation</text>
+  <text x="190" y="386" class="tiny" text-anchor="middle">"Thank. you. for." · zero-width</text>
+  <text x="190" y="401" class="tiny" text-anchor="middle">never tokenizes into words</text>
+  <rect x="112" y="408" width="156" height="18" rx="4" fill="#dbeafe"/>
+  <text x="190" y="421" class="mono" text-anchor="middle">h₁ (256) → logit₁</text>
+
+  <!-- branch 2 -->
+  <rect x="440" y="256" width="300" height="176" rx="7" class="newbox"/>
+  <text x="590" y="278" class="boxlb" text-anchor="middle">② BiLSTM + attention</text>
+  <text x="590" y="299" class="small" text-anchor="middle">BPE embedding (d=256)</text>
+  <text x="590" y="317" class="small" text-anchor="middle">2-layer BiLSTM</text>
+  <text x="590" y="335" class="small" text-anchor="middle">additive attention pooling</text>
+  <line x1="470" y1="350" x2="710" y2="350" stroke="#bfdbfe" stroke-width="1"/>
+  <text x="590" y="369" class="fix" text-anchor="middle">counters filler-dilution</text>
+  <text x="590" y="386" class="tiny" text-anchor="middle">spikes on the injected span instead</text>
+  <text x="590" y="401" class="tiny" text-anchor="middle">of mean-averaging it away</text>
+  <rect x="512" y="408" width="156" height="18" rx="4" fill="#dbeafe"/>
+  <text x="590" y="421" class="mono" text-anchor="middle">h₂ (256) → logit₂</text>
+
+  <!-- branch 3 -->
+  <rect x="840" y="256" width="300" height="176" rx="7" class="newbox"/>
+  <text x="990" y="278" class="boxlb" text-anchor="middle">③ Transformer (from scratch)</text>
+  <text x="990" y="299" class="small" text-anchor="middle">4 layers · 4 heads · d=256</text>
+  <text x="990" y="317" class="small" text-anchor="middle">learned positional encoding</text>
+  <text x="990" y="335" class="small" text-anchor="middle">attention pooling (not mean)</text>
+  <line x1="870" y1="350" x2="1110" y2="350" stroke="#bfdbfe" stroke-width="1"/>
+  <text x="990" y="369" class="fix" text-anchor="middle">carries lexical / semantic load</text>
+  <text x="990" y="386" class="tiny" text-anchor="middle">"ignore previous instructions"</text>
+  <text x="990" y="401" class="tiny" text-anchor="middle">and paraphrases · no pretraining</text>
+  <rect x="912" y="408" width="156" height="18" rx="4" fill="#dbeafe"/>
+  <text x="990" y="421" class="mono" text-anchor="middle">h₃ (256) → logit₃</text>
+
+  <path d="M 190 432 L 190 462" class="ln" marker-end="url(#arrow)"/>
+  <path d="M 590 432 L 590 462" class="ln" marker-end="url(#arrow)"/>
+  <path d="M 990 432 L 990 462" class="ln" marker-end="url(#arrow)"/>
+
+  <!-- concat bar -->
+  <rect x="40" y="464" width="1100" height="40" rx="7" class="newbox"/>
+  <text x="590" y="489" class="boxlb" text-anchor="middle">concat [h₁ ; h₂ ; h₃]  (768)</text>
+
+  <!-- to embed (left) and meta (down) -->
+  <path d="M 140 504 L 140 556" class="ln" marker-end="url(#arrow)"/>
+  <path d="M 590 504 L 590 556" class="ln" marker-end="url(#arrow)"/>
+
+  <!-- embed contract -->
+  <rect x="40" y="558" width="330" height="86" rx="7" class="newbox"/>
+  <text x="205" y="579" class="boxlb" text-anchor="middle">Linear(768 → 768)</text>
+  <text x="205" y="598" class="api" text-anchor="middle">embed()</text>
+  <text x="205" y="616" class="tiny" text-anchor="middle">dim MUST stay 768 —</text>
+  <text x="205" y="631" class="tiny" text-anchor="middle">AttackMemoryIndex(dim=768)</text>
+
+  <!-- meta learner -->
+  <rect x="430" y="558" width="440" height="86" rx="7" class="metabox"/>
+  <text x="650" y="579" class="boxlb" text-anchor="middle">Stacking meta-learner (fitted on held-out val)</text>
+  <text x="650" y="599" class="small" text-anchor="middle">input: [logit₁, logit₂, logit₃] + handcrafted features</text>
+  <text x="650" y="617" class="tiny" text-anchor="middle">non-ASCII ratio · punctuation density · length</text>
+  <text x="650" y="634" class="fix" text-anchor="middle">half of val fits it, half calibrates — K-fold OOF is the upgrade</text>
+
+  <path d="M 650 644 L 650 676" class="ln" marker-end="url(#arrow)"/>
+
+  <!-- risk score -->
+  <rect x="430" y="678" width="440" height="60" rx="7" class="newbox"/>
+  <text x="650" y="699" class="boxlb" text-anchor="middle">single logit → temperature scaling → sigmoid</text>
+  <text x="650" y="719" class="api" text-anchor="middle">forward() · risk_score()</text>
+  <text x="650" y="733" class="fix" text-anchor="middle">T=1.098 fitted on val · FPR 0.439 (DistilBERT) → 0.363</text>
+
+  <!-- API contract note -->
+  <rect x="900" y="558" width="240" height="180" rx="7" class="plain"/>
+  <text x="1020" y="580" class="boxlb" text-anchor="middle">Preserved contract</text>
+  <text x="915" y="602" class="api">forward(ids, mask)→logits</text>
+  <text x="915" y="622" class="api">risk_score()</text>
+  <text x="915" y="642" class="api">embed() → 768</text>
+  <text x="915" y="662" class="api">save() / load()</text>
+  <text x="915" y="682" class="api">config.json + model.pt</text>
+  <text x="1020" y="710" class="tiny" text-anchor="middle">Satisfy these four and</text>
+  <text x="1020" y="725" class="tiny" text-anchor="middle">nothing downstream changes.</text>
+
+  <!-- divider -->
+  <line x1="40" y1="762" x2="1140" y2="762" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="40" y="781" class="sub">Existing pipeline — unchanged</text>
+
+  <path d="M 650 738 L 650 800" class="ln" marker-end="url(#arrow)"/>
+  <path d="M 205 644 L 205 800" class="lnL" marker-end="url(#arrowLight)"/>
+
+  <!-- existing row -->
+  <rect x="40" y="802" width="330" height="66" rx="7" class="oldbox"/>
+  <text x="205" y="824" class="boxlb" text-anchor="middle">AttackMemoryIndex (FAISS)</text>
+  <text x="205" y="842" class="tiny" text-anchor="middle">correlation/closed_loop.py</text>
+  <text x="205" y="858" class="tiny" text-anchor="middle">+ CalibrationLayer</text>
+
+  <rect x="430" y="802" width="330" height="66" rx="7" class="oldbox"/>
+  <text x="595" y="824" class="boxlb" text-anchor="middle">FusionEngine</text>
+  <text x="595" y="842" class="tiny" text-anchor="middle">+ PolicyEngine (ABAC) · provenance</text>
+  <text x="595" y="858" class="tiny" text-anchor="middle">behavioral anomaly (digital twin removed)</text>
+
+  <rect x="810" y="802" width="330" height="66" rx="7" class="oldbox"/>
+  <text x="975" y="824" class="boxlb" text-anchor="middle">Allow / Flag / Block</text>
+  <text x="975" y="842" class="tiny" text-anchor="middle">run_eval · ASR / C-ASR / FPR / utility</text>
+  <text x="975" y="858" class="tiny" text-anchor="middle">web app · red-team loop</text>
+
+  <path d="M 760 835 L 806 835" class="ln" marker-end="url(#arrow)"/>
+  <path d="M 370 835 L 426 835" class="lnL" marker-end="url(#arrowLight)"/>
+
+  <text x="40" y="900" class="tiny">Training: 1 epoch (more epochs cut holdout AUC 0.809 → 0.770) · length-invariance + persona-framed benign augmentation · class-weighted loss for the 33-67 imbalance</text>
+  <text x="40" y="918" class="tiny">Ablation (holdout AUC): char-CNN 0.826 · BiLSTM+attn 0.797 · transformer 0.799 · full ensemble 0.828 — BiLSTM dilution gap −0.007 vs +0.225 / +0.271, so attention pooling is what removes the length shortcut</text>
+</svg>
