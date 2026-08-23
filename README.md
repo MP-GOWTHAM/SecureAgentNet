@@ -318,8 +318,14 @@ required. `pyproject.toml` requires Python **3.11+**; the commands below use
 ### Quick start (one command)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\bootstrap_windows.ps1 -ModelsRepo <user>/secureagentnet-models
+git clone https://github.com/MP-GOWTHAM/SecureAgentNet.git
+cd SecureAgentNet
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap_windows.ps1
 ```
+
+Checkpoints are pulled from
+[mpgowtham/secureagentnet-models](https://huggingface.co/mpgowtham/secureagentnet-models)
+(public, 367 MB) — no Hugging Face login needed for this path.
 
 Creates the venv, installs dependencies, installs a CUDA build of torch,
 downloads the trained checkpoints, writes the `combined_max` config, and
@@ -338,17 +344,27 @@ excluded from git:
 The web app loads a checkpoint at startup, so it will not run until one is
 installed. Two ways to get one:
 
-**Download** (a few minutes) — publish once from a machine that has them:
+**Download** (default, a few minutes) — the bootstrap script fetches them
+from `mpgowtham/secureagentnet-models`. Three checkpoints are published:
+
+| Checkpoint | Size | Held-out AUC |
+|---|---|---|
+| `ensemble_v4_persona` | 49 MB | 0.8278 |
+| `v3` (DistilBERT, post-Track B) | 253 MB | 0.7875 |
+| `harm_detector` | 49 MB | 0.9028 |
+
+`combined_max` — the recommended runtime configuration — is a config
+referencing the first two, written locally by the bootstrap script rather
+than downloaded, so the weights are never duplicated.
+
+To publish your own copy instead (needs a **write**-scope token):
 
 ```powershell
-.\.venv\Scripts\hf.exe auth login   # a WRITE-scope token
+.\.venv\Scripts\hf.exe auth login
 .\.venv\Scripts\python.exe scripts\publish_models.py --repo-id <user>/secureagentnet-models
 ```
 
-then pass `-ModelsRepo <user>/secureagentnet-models` to the bootstrap
-script on any other machine. Only three checkpoints are needed
-(`ensemble_v4_persona` 49 MB, `harm_detector` 49 MB, `v3` 253 MB);
-`combined_max` is a config referencing two of them and is written locally.
+then pass `-ModelsRepo <user>/secureagentnet-models` to the bootstrap script.
 
 **Or train from scratch** (~45 min on an RTX 5070, needs a Hugging Face
 login and acceptance of three dataset licences) — see

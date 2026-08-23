@@ -36,7 +36,9 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ModelsRepo = "",
+    # Published by scripts/publish_models.py. Public, 367 MB: the three
+    # checkpoints a working install needs. Override for your own copy.
+    [string]$ModelsRepo = "mpgowtham/secureagentnet-models",
     [string]$CudaIndex  = "https://download.pytorch.org/whl/cu128",
     [string]$PythonVersion = "3.13",
     [switch]$SkipModels,
