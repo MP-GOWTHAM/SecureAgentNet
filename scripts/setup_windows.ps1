@@ -1,5 +1,5 @@
 <#
-    SecureAgentNet — Windows setup (PowerShell).
+    SecureAgentNet - Windows setup (PowerShell).
 
     Same steps as the repo's macOS setup block in README.md
     (`python3 -m venv .venv && source .venv/bin/activate; pip install -r

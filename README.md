@@ -315,6 +315,45 @@ The project runs natively on Windows 10/11 — no WSL, Docker, or Unix shell
 required. `pyproject.toml` requires Python **3.11+**; the commands below use
 3.13, which is what this port was verified against.
 
+### Quick start (one command)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap_windows.ps1 -ModelsRepo <user>/secureagentnet-models
+```
+
+Creates the venv, installs dependencies, installs a CUDA build of torch,
+downloads the trained checkpoints, writes the `combined_max` config, and
+runs the test suite. Flags: `-SkipCuda` (no NVIDIA GPU), `-SkipModels`
+(environment only), `-CudaIndex` (see the GPU table below).
+
+**A clone alone is not runnable**, and that is deliberate. Three things are
+excluded from git:
+
+| Excluded | Size | Why |
+|---|---|---|
+| `secureagentnet/data/models/` | 1.6 GB | Five checkpoints are 253 MB each; GitHub hard-rejects files over 100 MB |
+| `data/` | 191 MB | Regenerable from Hugging Face by the `scripts/build_*_dataset.py` builders |
+| `.venv/` | ~5 GB | Local environment |
+
+The web app loads a checkpoint at startup, so it will not run until one is
+installed. Two ways to get one:
+
+**Download** (a few minutes) — publish once from a machine that has them:
+
+```powershell
+.\.venv\Scripts\hf.exe auth login   # a WRITE-scope token
+.\.venv\Scripts\python.exe scripts\publish_models.py --repo-id <user>/secureagentnet-models
+```
+
+then pass `-ModelsRepo <user>/secureagentnet-models` to the bootstrap
+script on any other machine. Only three checkpoints are needed
+(`ensemble_v4_persona` 49 MB, `harm_detector` 49 MB, `v3` 253 MB);
+`combined_max` is a config referencing two of them and is written locally.
+
+**Or train from scratch** (~45 min on an RTX 5070, needs a Hugging Face
+login and acceptance of three dataset licences) — see
+*Training from scratch* below.
+
 ### PowerShell
 
 ```powershell
@@ -438,6 +477,30 @@ Two notes from doing this on an RTX 5070:
 
 `pick_device()` returns `cuda` when available and falls back to `cpu` on
 Windows (MPS is macOS-only and is now gated behind `platform.system()`).
+
+### Training from scratch
+
+Needed only if you are not downloading checkpoints. Requires a Hugging Face
+login (`hf auth login`) and acceptance of the three gated dataset licences
+listed under **Datasets**.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\build_consolidated_dataset.py
+.\.venv\Scripts\python.exe -m secureagentnet.detector.train_ensemble --csv data\consolidated_dataset.csv --epochs 1 --augment --n-persona-benign 6000 --output-dir secureagentnet\data\models\ensemble_v4_persona
+.\.venv\Scripts\python.exe -m secureagentnet.detector.train --csv data\consolidated_dataset.csv --epochs 3 --output-dir secureagentnet\data\models\v3
+.\.venv\Scripts\python.exe scripts\build_harm_dataset.py --n-per-class 30000 --n-mix-benign 12000
+.\.venv\Scripts\python.exe -m secureagentnet.detector.train_ensemble --csv data\harm_dataset.csv --epochs 1 --n-persona-benign 6000 --output-dir secureagentnet\data\models\harm_detector
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap_windows.ps1 -SkipModels -SkipCuda
+```
+
+The last line writes `combined_max` from the two members and verifies the
+suite. **One epoch is intentional** — more epochs lower held-out AUC
+(0.809 at 1 epoch, 0.770 at 20) and no in-distribution signal detects it;
+see §5.1 of `docs/SecureAgentNet_Detector_Architecture.docx`.
+
+Judge a training run by `metrics.json` and the log tail, not the exit code:
+on Windows the process exits `0xC0000409` after a fully successful run (a
+native DLL-unload fault after all artifacts are flushed).
 
 `pick_device()` picks `cuda` when available and falls back to `cpu` on
 Windows (MPS is macOS-only and is now gated behind `platform.system()`).
