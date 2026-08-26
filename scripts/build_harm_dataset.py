@@ -46,6 +46,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("build_harm_dataset")
 
 HF_ID = "Necent/llm-jailbreak-prompt-injection-dataset"
+UNIFIED_HF_ID = "ynyg/Unified-Prompt-Guard"
 
 
 def main() -> None:
@@ -56,6 +57,10 @@ def main() -> None:
     p.add_argument("--mix-benign-from", default=str(REPO_ROOT / "data" / "consolidated_dataset.csv"),
                    help="CSV to draw extra benign rows from (train split only); '' to disable")
     p.add_argument("--n-mix-benign", type=int, default=12_000)
+    p.add_argument("--unified-max-rows", type=int, default=60_000,
+                   help="rows to draw from ynyg/Unified-Prompt-Guard (0 disables)")
+    p.add_argument("--unified-languages", default="en,mixed,code",
+                   help="languages to keep from it, or 'all' (it is 24%% Chinese)")
     p.add_argument("--out", default=str(REPO_ROOT / "data" / "harm_dataset.csv"))
     a = p.parse_args()
 
@@ -121,6 +126,40 @@ def main() -> None:
     out = out.drop_duplicates(subset="text")
     out = out.sample(frac=1.0, random_state=rng_state).reset_index(drop=True)
 
+    # Second harm source. Necent alone gives the classifier one view of
+    # what "harmful" means; Unified-Prompt-Guard is drawn from nemotron
+    # and pku_saferlhf, which is genuinely different provenance on the
+    # same axis. Adding a second source is the intervention that worked
+    # for the injection detector -- one new dataset moved held-out AUC
+    # 0.8278 -> 0.9168 and FPR 0.363 -> 0.208, more than every
+    # augmentation and rebalancing attempt combined.
+    unified = pd.DataFrame()
+    if a.unified_max_rows > 0:
+        try:
+            u = load_dataset(UNIFIED_HF_ID, split="train")
+            udf = pd.DataFrame({
+                "text": u["text"], "label_raw": u["label"],
+                "lang": u["lang"], "usource": u["source"],
+            })
+            # English only by default. 24% of this corpus is Chinese, and
+            # the harm classifier is evaluated and deployed entirely on
+            # English -- capacity spent on a language never measured is at
+            # best neutral. Pass --unified-languages all to include them.
+            if a.unified_languages != "all":
+                keep = {s.strip() for s in a.unified_languages.split(",")}
+                udf = udf[udf["lang"].isin(keep)]
+            udf["label"] = (udf["label_raw"].astype(str).str.lower() == "unsafe").astype(int)
+            udf = udf.drop_duplicates(subset="text")
+            n_u = min(len(udf), a.unified_max_rows)
+            unified = udf.sample(n=n_u, random_state=rng_state)
+            logger.info(
+                "unified: %d rows after lang filter (%s), sampled %d | %.1f%% harmful | sources: %s",
+                len(udf), a.unified_languages, n_u, 100 * unified["label"].mean(),
+                unified["usource"].value_counts().to_dict(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not load %s (%s); continuing without it", UNIFIED_HF_ID, exc)
+
     # Stratified split, tagged so build_splits_from_csv routes them:
     # hf_csv2 -> test, everything else -> train/val.
     n_test = int(len(out) * a.test_fraction)
@@ -138,6 +177,24 @@ def main() -> None:
     })
     frame.loc[test_idx, "source_dataset"] = "hf_csv2"
     frame.loc[test_idx, "split"] = "test"
+
+    # Unified rows are appended AFTER the test split is drawn, so they only
+    # ever land in train. That keeps the held-out set identical to the one
+    # the previous harm classifier was measured on (AUC 0.9028), making
+    # this a clean A/B on whether the second source helps rather than a
+    # comparison against a different benchmark.
+    if len(unified):
+        unified_frame = pd.DataFrame({
+            "text": unified["text"].astype(str),
+            "label": unified["label"].astype(int),
+            "attack_type": "unified_" + unified["usource"].astype(str),
+            "source_dataset": "hf_csv",
+            "split": "train",
+        })
+        before = set(frame["text"])
+        unified_frame = unified_frame[~unified_frame["text"].isin(before)]
+        frame = pd.concat([frame, unified_frame], ignore_index=True)
+        logger.info("appended %d unified rows to TRAIN only (test split unchanged)", len(unified_frame))
 
     dest = Path(a.out)
     dest.parent.mkdir(parents=True, exist_ok=True)

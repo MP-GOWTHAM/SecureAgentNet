@@ -44,6 +44,7 @@ SOURCE_TO_CSV_TAG = {
     "neuralchemy": "hf_csv",
     "necent": "hf_csv3",
     "mindgard": "hf_csv4",
+    "smooth3": "hf_csv5",
     "qualifire_holdout": "hf_csv2",
 }
 TEST_TAG = "hf_csv2"

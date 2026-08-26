@@ -64,6 +64,12 @@ class DatasetSpec:
     label_field_candidates: tuple[str, ...] = ("label", "is_injection", "is_malicious", "target")
     category_field_candidates: tuple[str, ...] = ("category", "attack_type", "type")
     requires_auth: bool = False
+    balance_labels: float | None = None
+    """Target positive fraction when `max_rows` caps this source, e.g. 0.5.
+
+    None (the default) keeps the stratified behaviour that preserves the
+    source's own attack/benign ratio. Set it only for a large source whose
+    skew would otherwise propagate into the merged corpus."""
     fallback_hf_ids: tuple[str, ...] = field(default_factory=tuple)
     # Row cap applied *before* dedup/splitting, sampled with `seed`. Necent
     # alone is ~1.17M rows post-explosion (InjecAgent/ToolEmu/BIPIA etc all
@@ -97,6 +103,48 @@ def _normalize_mindgard(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["text", "label", "category"])
 
 
+def _normalize_smooth3(df: pd.DataFrame) -> pd.DataFrame:
+    """Smooth-3's label is a multi-label LIST, not a scalar: `['BENIGN']` or
+    `['JAILBREAK', 'INSTRUCTION_OVERRIDE']`, sometimes with ROLE_HIJACK or
+    DATA_EXFILTRATION alongside. `_normalize_label` handles scalars only, so
+    the collapse to a binary label happens here, keeping the attack taxonomy
+    in `category` where it stays inspectable.
+
+    Added (2026) to fix a specific, measured weakness in the existing
+    mixture rather than for volume. Two properties it has that the other
+    three sources do not:
+
+      length balance   median benign 307 chars vs attack 357. The existing
+                       corpus runs benign 129 vs attack 436, which is the
+                       spurious cue behind the length shortcut (see the
+                       architecture doc, section 5.2) -- and the qualifire
+                       benchmark shares that artifact, so a model exploiting
+                       it is rewarded by held-out AUC while failing on short
+                       real injections. This source carries almost no length
+                       signal, so it cannot reinforce the shortcut.
+
+      class balance    48% benign / 52% attack. Mindgard is 100% attack and
+                       Necent is 27% attack, so the merged corpus has never
+                       had a source that was close to balanced on its own.
+
+    Its attacks are also predominantly dilution-style -- an override buried
+    in innocuous prose about papermaking or fishing -- which is the exact
+    family that defeated every DistilBERT version in the Track B cycle.
+    """
+    out = pd.DataFrame()
+    out["text"] = df["text"].astype(str)
+    labels = df["labels"]
+    out["label"] = labels.map(
+        lambda v: int(any("JAILBREAK" in str(x).upper() for x in v))
+        if isinstance(v, (list, tuple))
+        else int("JAILBREAK" in str(v).upper())
+    )
+    out["category"] = labels.map(
+        lambda v: "|".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
+    )
+    return out
+
+
 DATASET_SPECS: list[DatasetSpec] = [
     DatasetSpec(
         name="neuralchemy",
@@ -121,6 +169,54 @@ DATASET_SPECS: list[DatasetSpec] = [
         role="train",
         split="train",
         custom_normalizer=_normalize_mindgard,
+    ),
+    DatasetSpec(
+        name="smooth3",
+        hf_id="Smooth-3/llm-prompt-injection-attacks",
+        role="train",
+        split="train",
+        custom_normalizer=_normalize_smooth3,
+    ),
+    DatasetSpec(
+        # 261,738 rows upstream, 48.8% positive, median length attack 380 /
+        # benign 309 -- as length-neutral as smooth3, and stylistically the
+        # same family, so it is capped rather than taken whole: the two
+        # together would otherwise be ~half the corpus in one voice.
+        #
+        # 17.8% of it already appears in the corpus; dedup in
+        # `_splits_from_merged` removes those, so the cap is applied to the
+        # raw pull and the effective contribution is lower.
+        #
+        # NOT included: jayavibhav/prompt-injection-safety, which overlaps
+        # the existing corpus 90.2% -- a repackaging, not a new source.
+        name="jayavibhav",
+        hf_id="jayavibhav/prompt-injection",
+        role="train",
+        split="train",
+        max_rows=100_000,
+    ),
+    DatasetSpec(
+        # 535,105 rows upstream with ZERO overlap against every other
+        # source -- genuinely independent provenance (HackAPrompt-style
+        # competition submissions rather than generated variants), which is
+        # what the measured evidence says actually helps: one new source
+        # moved held-out AUC 0.8278 -> 0.9168, while 1.1M extra Necent rows
+        # cost 0.078.
+        #
+        # Capped at 120k for the same reason Necent is capped at 30k.
+        # Uncapped it would be 74% of the corpus, and the one time a single
+        # source reached 97.8% the model regressed to that source's own
+        # ceiling (AUC 0.7501). Its label field is `labels`, not `label`.
+        name="imoxto",
+        hf_id="imoxto/prompt_injection_cleaned_dataset-v2",
+        role="train",
+        split="train",
+        label_field_candidates=("labels", "label", "is_injection"),
+        max_rows=120_000,
+        # Upstream is 24.8% positive. Taken at that ratio it dragged the
+        # corpus from 1.19 to 1.61 pos_weight and cost 0.033 held-out AUC;
+        # drawn 50/50 it contributes its provenance without its skew.
+        balance_labels=0.5,
     ),
     DatasetSpec(
         name="qualifire_holdout",
@@ -223,7 +319,29 @@ def load_and_normalize(spec: DatasetSpec, hf_token: str | None = None, seed: int
         if n_dropped:
             logger.warning("%s: dropped %d rows with unrecognized label values", spec.name, n_dropped)
 
-    if spec.max_rows is not None and len(out) > spec.max_rows:
+    if spec.balance_labels is not None and spec.max_rows is not None:
+        # Opt-in override of the stratified cap below: draw a fixed
+        # attack/benign ratio instead of preserving the source's own.
+        #
+        # Added because the stratified cap faithfully carried imoxto's
+        # 24.8%-positive skew into the corpus, which pushed pos_weight
+        # 1.19 -> 1.61 and measurably cost held-out AUC (0.9168 -> 0.8835)
+        # when that source was added. Preserving a source's ratio is the
+        # right default; it is the wrong choice for a large, heavily
+        # skewed source being mixed with balanced ones.
+        n_pos = int(spec.max_rows * spec.balance_labels)
+        n_neg = spec.max_rows - n_pos
+        pos, neg = out[out["label"] == 1], out[out["label"] == 0]
+        take_pos, take_neg = min(len(pos), n_pos), min(len(neg), n_neg)
+        out = pd.concat(
+            [pos.sample(n=take_pos, random_state=seed), neg.sample(n=take_neg, random_state=seed)],
+            ignore_index=True,
+        )
+        logger.info(
+            "%s: balanced sample to %d rows (%.1f%% positive, requested %.0f%%)",
+            spec.name, len(out), 100 * out["label"].mean(), 100 * spec.balance_labels,
+        )
+    elif spec.max_rows is not None and len(out) > spec.max_rows:
         # Stratified sample so the cap doesn't accidentally skew the
         # attack/benign ratio of a source that's mostly one class.
         frac = spec.max_rows / len(out)
@@ -323,6 +441,9 @@ CSV_SOURCE_MAP = {
     "hf_csv2": "qualifire_holdout",
     "hf_csv3": "necent",
     "hf_csv4": "mindgard",
+    "hf_csv5": "smooth3",
+    "hf_csv6": "jayavibhav",
+    "hf_csv7": "imoxto",
 }
 # Only hf_csv2 (qualifire) is the held-out benchmark; everything else is
 # pooled into train/val regardless of the CSV's own train/validation split

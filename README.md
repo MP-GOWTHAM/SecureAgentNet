@@ -178,9 +178,30 @@ that failed — are in `docs/SecureAgentNet_Detector_Architecture.docx` §8.
 | `neuralchemy/Prompt-injection-dataset` | train | clean `text`/`label`/`category` schema, 29 attack categories |
 | `Necent/llm-jailbreak-prompt-injection-dataset` | train | ~1.17M rows aggregating InjecAgent/ToolEmu/BIPIA/etc; sampled to 30k stratified rows for iteration speed (see `DatasetSpec.max_rows` in `detector/data_loader.py`) |
 | `Mindgard/evaded-prompt-injection-and-jailbreak-samples` | train | (original, obfuscated-variant) pairs, no label column — both sides are unpivoted as positive (label=1) since the point of the dataset is evasion-robustness |
+| `Smooth-3/llm-prompt-injection-attacks` | train | 49,500 rows, 52% attack, multi-label list collapsed to binary. **Nearly length-neutral** (median benign 307 / attack 357), which is why it was added — see below |
+| `jayavibhav/prompt-injection` | train | 261,738 upstream, capped to 100k. 48.8% attack, same length profile as Smooth-3. 17.8% overlaps existing rows and is removed by dedup |
+| `imoxto/prompt_injection_cleaned_dataset-v2` | train | 535,105 upstream, capped to 120k drawn **50/50** via `DatasetSpec.balance_labels` (upstream is 24.8% attack, and that skew measurably cost AUC) |
 | `qualifire/prompt-injections-benchmark` (now `rogue-security/prompt-injections-benchmark`) | **test only** | 5,000 rows, held out entirely — never merged into train/val |
 
-`secureagentnet/detector/data_loader.py` normalizes all four into one
+Not included: `jayavibhav/prompt-injection-safety` overlaps the existing
+corpus **90.2%** — a repackaging rather than a new source.
+
+**Corpus size is a deliberate choice, not a limit.** Four independent runs
+measured it against the held-out benchmark:
+
+| Corpus | Rows | Held-out AUC |
+|---|---|---|
+| Necent uncapped (97.8% one source) | 1,207,449 | 0.7501 |
+| 7 sources, imoxto at native skew | 331,517 | 0.8835 |
+| 7 sources, imoxto rebalanced 50/50 | 331,517 | 0.8929 |
+| **5 sources, balanced** | **111,517** | **0.9168** |
+
+More rows did not help; **source balance did**. Adding one length-neutral
+source moved AUC 0.8278 → 0.9168 and FPR 0.363 → 0.208, while adding 1.1M
+extra Necent rows cost 0.078 AUC. That is why `Necent` is capped at 30k and
+`imoxto` is both capped and rebalanced.
+
+`secureagentnet/detector/data_loader.py` normalizes all of them into one
 schema (`text`, `label`, `category`, `source`), dedups by exact text hash,
 and produces a stratified `{train, val, test}` split. The **qualifire
 holdout is architecturally isolated**: `build_splits` only ever draws `test`

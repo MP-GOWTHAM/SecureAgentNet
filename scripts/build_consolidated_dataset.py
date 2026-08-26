@@ -37,6 +37,9 @@ SOURCE_TO_CSV_TAG = {
     "qualifire_holdout": "hf_csv2",
     "necent": "hf_csv3",
     "mindgard": "hf_csv4",
+    "smooth3": "hf_csv5",
+    "jayavibhav": "hf_csv6",
+    "imoxto": "hf_csv7",
 }
 
 
