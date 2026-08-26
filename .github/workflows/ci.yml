@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main, windows-version]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # faiss and torch each ship their own OpenMP runtime; loading both without
+  # this reliably segfaults (see secureagentnet/tests/conftest.py).
+  KMP_DUPLICATE_LIB_OK: "TRUE"
+  OMP_NUM_THREADS: "1"
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Code correctness. Needs no checkpoints, so it runs on every push and is
+  # the gate that must always be green.
+  # ---------------------------------------------------------------------
+  tests:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest is the platform this port targets; ubuntu catches
+        # accidental re-introduction of Windows-only assumptions.
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        # CPU torch is correct here: CI runs no training, and the CUDA
+        # wheel is ~3 GB.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-windows.txt
+
+      - name: Run tests
+        run: pytest secureagentnet/tests -q
+
+  # ---------------------------------------------------------------------
+  # Behavioural probes. These need trained checkpoints, which are not in
+  # git, so they download ~316 MB from the Hub and are cached.
+  #
+  # They exist because aggregate metrics do not detect what they catch.
+  # Twice in this project a change improved headline numbers while
+  # destroying attack coverage: the DistilBERT persona rebalance improved
+  # FPR and lost 7/8 -> 0/8 evasions, and adding a corpus improved AUC
+  # 0.8278 -> 0.9168 while dropping the standalone model to 5/8 short
+  # attacks. No test on AUC, F1 or FPR would have failed.
+  # ---------------------------------------------------------------------
+  probes:
+    name: Behavioural probes
+    runs-on: ubuntu-latest
+    needs: tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-windows.txt
+
+      - name: Cache checkpoints
+        uses: actions/cache@v4
+        with:
+          path: secureagentnet/data/models
+          key: checkpoints-${{ hashFiles('scripts/publish_models.py') }}-v1
+
+      - name: Download checkpoints
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from huggingface_hub import snapshot_download
+          dest = Path("secureagentnet/data/models")
+          # Only the two members the default configuration needs.
+          snapshot_download(
+              repo_id="mpgowtham/secureagentnet-models",
+              local_dir=str(dest),
+              allow_patterns=["ensemble_v6_smooth3/*", "v3/*"],
+          )
+          from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig
+          CombinedRiskModel(CombinedRiskModelConfig(
+              members=["ensemble_v6_smooth3", "v3"], mode="gated_max", gate=0.95,
+          )).save(dest / "combined_gated_v7")
+          print("combined_gated_v7 assembled")
+          PY
+
+      - name: Short-attack probe
+        # Thresholds are the deployed model's measured behaviour, not
+        # aspirations: it catches 8/8 canonical short attacks, flags 0/4
+        # benign controls, and has a dilution gap of -0.202. The gap bound
+        # is loose enough to absorb noise but tight enough to catch a
+        # model that has started reading length instead of content.
+        run: |
+          python scripts/probe_short_attacks.py \
+            --models combined_gated_v7 \
+            --assert-min-short 8 \
+            --assert-max-benign-fp 0 \
+            --assert-max-dilution 0.35 \
+            --verbose
+
+      - name: Evasion regression check
+        # evasions.json is not in the repo, so this self-skips unless a set
+        # is present. Kept in CI so it starts enforcing as soon as one is
+        # committed or restored from cache.
+        run: |
+          python scripts/check_evasions.py \
+            --model-dir secureagentnet/data/models/combined_gated_v7 \
+            --min-caught 8 \
+            --min-mean-score 0.60

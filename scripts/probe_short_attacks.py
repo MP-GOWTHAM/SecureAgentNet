@@ -93,6 +93,13 @@ def main() -> None:
     p.add_argument("--models", nargs="*", default=None,
                    help="model directory names under secureagentnet/data/models")
     p.add_argument("--verbose", action="store_true", help="print per-attack scores")
+    p.add_argument("--assert-min-short", type=int, default=None,
+                   help="exit non-zero if any model catches fewer than this many "
+                        "of the 8 canonical short attacks")
+    p.add_argument("--assert-max-benign-fp", type=int, default=None,
+                   help="exit non-zero if any model flags more than this many of the 4 benign controls")
+    p.add_argument("--assert-max-dilution", type=float, default=None,
+                   help="exit non-zero if any |dilution gap| exceeds this")
     a = p.parse_args()
 
     names = a.models or [d.name for d in sorted(MODELS_DIR.iterdir()) if (d / "config.json").exists()]
@@ -101,12 +108,16 @@ def main() -> None:
     print(f"{'model':<22} {'short attacks':>14} {'short benign':>14} {'dilution gap':>14}")
     print("-" * 68)
 
+    failures: list[str] = []
+    checked = 0
+
     for name in names:
         d = MODELS_DIR / name
         if not (d / "config.json").exists():
             print(f"{name:<22}  (no checkpoint)")
             continue
         score = make_scorer(d)
+        checked += 1
 
         atk = [score(t) for t in SHORT_ATTACKS]
         ben = [score(t) for t in SHORT_BENIGN]
@@ -114,17 +125,43 @@ def main() -> None:
         # score? If length is not a shortcut this is ~0.
         gaps = [score(f"{t} {FILLER}") - s for t, s in zip(SHORT_ATTACKS, atk)]
         gap = sum(gaps) / len(gaps)
+        n_caught = sum(s >= THRESHOLD for s in atk)
+        n_fp = sum(s >= THRESHOLD for s in ben)
 
-        print(f"{name:<22} {sum(s >= THRESHOLD for s in atk):>8}/{len(atk):<5} "
-              f"{sum(s >= THRESHOLD for s in ben):>8}/{len(ben):<5} {gap:>+14.3f}")
+        print(f"{name:<22} {n_caught:>8}/{len(atk):<5} "
+              f"{n_fp:>8}/{len(ben):<5} {gap:>+14.3f}")
 
         if a.verbose:
             for t, s, g in zip(SHORT_ATTACKS, atk, gaps):
                 mark = "OK  " if s >= THRESHOLD else "MISS"
                 print(f"      {mark} bare={s:.4f} padded={s + g:.4f} gap={g:+.4f}  {t[:52]!r}")
 
+        if a.assert_min_short is not None and n_caught < a.assert_min_short:
+            failures.append(f"{name}: caught {n_caught}/{len(atk)} short attacks, "
+                            f"required >= {a.assert_min_short}")
+        if a.assert_max_benign_fp is not None and n_fp > a.assert_max_benign_fp:
+            failures.append(f"{name}: {n_fp}/{len(ben)} benign controls flagged, "
+                            f"allowed <= {a.assert_max_benign_fp}")
+        if a.assert_max_dilution is not None and abs(gap) > a.assert_max_dilution:
+            failures.append(f"{name}: |dilution gap| {abs(gap):.3f} exceeds {a.assert_max_dilution}")
+
     print("\ndilution gap: score(attack + benign filler) - score(bare attack).")
     print("Near zero means the model is reading the attack, not the length.")
+
+    asserting = any(v is not None for v in
+                    (a.assert_min_short, a.assert_max_benign_fp, a.assert_max_dilution))
+    if asserting and checked == 0:
+        # A silent pass because nothing was scored would make this probe
+        # useless exactly when the checkpoints failed to download.
+        print("\nFAIL: assertions requested but no checkpoint was found to score")
+        raise SystemExit(2)
+    if failures:
+        print("\nFAILED:")
+        for f in failures:
+            print(f"  - {f}")
+        raise SystemExit(1)
+    if asserting:
+        print(f"\nPASS: {checked} model(s) met every threshold")
 
 
 if __name__ == "__main__":
