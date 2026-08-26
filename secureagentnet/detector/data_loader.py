@@ -366,6 +366,16 @@ def _dedup(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def _text_key(text: str) -> str:
+    """Normalised identity used for cross-split leak checks.
+
+    Deliberately stronger than `_dedup`'s exact hash: case- and
+    whitespace-insensitive, so a trivially reformatted copy of a holdout
+    row still cannot slip into training.
+    """
+    return hashlib.sha256(" ".join(str(text).lower().split()).encode("utf-8")).hexdigest()
+
+
 def _splits_from_merged(
     merged: pd.DataFrame, val_fraction: float = 0.1, seed: int = 42
 ) -> dict[str, pd.DataFrame]:
@@ -376,6 +386,29 @@ def _splits_from_merged(
     """
     train_pool = _dedup(merged[merged["split_role"] == "train"].drop(columns="split_role"))
     test = _dedup(merged[merged["split_role"] == "test"].drop(columns="split_role"))
+
+    # Holding out a whole source only isolates it if no *other* source
+    # re-contains its texts. hf_csv5 (Smooth-3) did: 9.1% of it was
+    # verbatim qualifire, covering 81.6% of the 5000-row benchmark. The
+    # damage scales with model capacity -- a DistilBERT trained on it
+    # scored FPR 0.069 over the full holdout but 0.199 over the part it
+    # had genuinely not seen, so the leak read as a breakthrough.
+    #
+    # Rows are dropped from TRAIN, never from the holdout, so the
+    # benchmark stays comparable with previously published numbers.
+    test_keys = set(test["text"].map(_text_key))
+    leaked = train_pool["text"].map(_text_key).isin(test_keys)
+    if leaked.any():
+        logger.warning(
+            "holdout leak: dropped %d training rows (%.1f%% of train) whose text "
+            "also appears in the holdout source", int(leaked.sum()), 100 * leaked.mean())
+        train_pool = train_pool[~leaked].reset_index(drop=True)
+        if train_pool.empty:
+            raise ValueError(
+                "every training row duplicates the holdout source; there is "
+                "nothing left to train on. Check that the training sources are "
+                "not copies of the benchmark."
+            )
 
     # Stratified train/val split by label so both splits keep the same
     # attack/benign ratio as the pooled training data.
