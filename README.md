@@ -1,5 +1,7 @@
 # SecureAgentNet
 
+[![CI](https://github.com/MP-GOWTHAM/SecureAgentNet/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MP-GOWTHAM/SecureAgentNet/actions/workflows/ci.yml)
+
 Runtime defense framework for tool-integrated LLM agents that fuses **prompt
 injection detection** with **privilege governance**, so that an injection
 which partially evades the detector still has to clear a separate
@@ -588,7 +590,7 @@ detector — the 0.85 default assumes DistilBERT's uncalibrated scores),
 ### 4. Behavioural probes
 
 Aggregate metrics miss both of the failure modes this project actually hit,
-so these two run in seconds and are worth putting in CI:
+so these two run in seconds:
 
 ```powershell
 python scripts\probe_short_attacks.py --verbose
@@ -599,6 +601,25 @@ The first reports how many of the 8 canonical short attacks each model
 catches plus a *dilution gap* (near zero means the model reads the attack,
 not the text length). The second scores the 8 real evasions found by
 red-teaming against every checkpoint.
+
+Both have a CI-oriented form that takes thresholds and exits non-zero, and
+these are what [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs
+against the deployed `combined_gated_v7` on every push:
+
+```powershell
+python scripts\probe_short_attacks.py --models combined_gated_v7 `
+  --assert-min-short 8 --assert-max-benign-fp 0 --assert-max-dilution 0.35
+python scripts\check_evasions.py `
+  --model-dir secureagentnet\data\models\combined_gated_v7 `
+  --min-caught 8 --min-mean-score 0.60
+```
+
+The thresholds are the deployed model's measured behaviour rather than
+aspirations. They exist because no assertion on AUC, F1 or FPR would have
+caught either regression: the DistilBERT persona rebalance improved FPR
+0.405 → 0.382 while losing every evasion (7/8 → 0/8), and adding the
+Smooth-3 corpus improved AUC 0.8278 → 0.9168 while dropping the standalone
+model to 5/8 short attacks.
 
 ### 5. Analysis
 
