@@ -42,14 +42,14 @@ MODELS_DIR = REPO_ROOT / "secureagentnet" / "data" / "models"
 
 # name -> (what it is, needed to run the app?)
 PUBLISH = {
-    "ensemble_v4_persona": "from-scratch ensemble detector (injection axis)",
-    "harm_detector": "content-harm classifier (harm axis)",
+    # --- current recommended set -------------------------------------
+    "ensemble_v6_smooth3": "ensemble trained on the 5-source corpus (best AUC 0.9168)",
     "v3": "DistilBERT after the Track B cycle (second combined_max member)",
-    # Not needed by the default runtime configuration, but the README
-    # offers it as the "maximum utility" option (FPR 0.328 against
-    # combined_max's 0.431), and a documented option that a fresh clone
-    # cannot obtain is not really an option.
-    "ensemble_v5_fpr": "persona-rebalanced ensemble (lower FPR, misses one short attack)",
+    "harm_detector_v3": "content-harm classifier, two sources (harm axis)",
+    "ensemble_v9_bal": "ensemble on the 331k 7-source corpus (best FPR 0.189 / utility 0.811)",
+    # --- superseded, kept so earlier results stay reproducible --------
+    "ensemble_v4_persona": "previous ensemble, 4-source corpus (AUC 0.8278)",
+    "harm_detector": "previous content-harm classifier, Necent only",
 }
 
 CARD = """---
@@ -65,17 +65,25 @@ are 253 MB each, against GitHub's 100 MB per-file hard limit.
 
 | Directory | What it is | Held-out AUC |
 |---|---|---|
-| `ensemble_v4_persona` | From-scratch ensemble: char-CNN + BiLSTM-attention + scratch transformer, 12.3M params | 0.8278 |
+| `ensemble_v6_smooth3` | **Recommended detector.** From-scratch ensemble (char-CNN + BiLSTM-attention + scratch transformer, 12.3M params) on the 5-source corpus | **0.9168** |
 | `v3` | DistilBERT after the Track B online-retraining cycle, 66M params | 0.7875 |
-| `harm_detector` | Content-harm classifier (a separate axis from injection) | 0.9028 |
-| `ensemble_v5_fpr` | Persona-rebalanced ensemble — lower FPR (0.328 vs 0.363), misses one canonical short attack | 0.8237 |
+| `harm_detector_v3` | Content-harm classifier — a separate axis from injection | 0.8978 |
+| `ensemble_v9_bal` | Same architecture on the 331k 7-source corpus. Lower FPR (0.189) and higher utility (0.811) but lower AUC | 0.8929 |
+| `ensemble_v4_persona` | Superseded — previous ensemble on the 4-source corpus | 0.8278 |
+| `harm_detector` | Superseded — previous harm classifier, Necent only | 0.9028 |
 
-The recommended runtime configuration is `combined_max` — the elementwise
-max of `ensemble_v4_persona` and `v3`. The two fail in opposite directions
-(dilution gap +0.142 vs −0.303), and the combination is the only one
-measured with no known blind spot: 8/8 canonical short attacks and 8/8 real
-evasions, FNR 0.035. It is a config referencing the two members, so it is
-recreated locally rather than stored here.
+The recommended runtime configuration is `combined_max_v7` — the elementwise
+max of `ensemble_v6_smooth3` and `v3`. The two fail in opposite directions,
+and the combination is the only one measured with no known blind spot: 8/8
+canonical short attacks and 8/8 real evasions, ASR 0.025, FNR 0.029. It is a
+config referencing the two members, so it is recreated locally rather than
+stored here.
+
+Note that `combined_max_v7` has a *lower* AUC (0.8223) than
+`ensemble_v6_smooth3` alone (0.9168), because taking a max inherits the
+union of both members' false positives. AUC is the wrong criterion for this
+choice — the combination exists to eliminate blind spots, not to maximise
+ranking.
 
 Download with `scripts/bootstrap_windows.ps1` in the repo, or manually:
 

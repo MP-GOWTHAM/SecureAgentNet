@@ -1,4 +1,4 @@
-<#
+﻿<#
     SecureAgentNet - one-command Windows bootstrap.
 
     Takes a fresh `git clone` to a running web app. setup_windows.ps1 only
@@ -13,7 +13,7 @@
          253 MB each against GitHub's 100 MB per-file hard limit, so they
          are published to the Hugging Face Hub instead (see
          scripts/publish_models.py).
-      3. The `combined_max` config, which just references two downloaded
+      3. The `combined_max_v7` config, which just references two downloaded
          members and is written locally.
 
     NOTE: this file is deliberately pure ASCII. Windows PowerShell 5.1
@@ -36,8 +36,9 @@
 #>
 [CmdletBinding()]
 param(
-    # Published by scripts/publish_models.py. Public, 367 MB: the three
-    # checkpoints a working install needs. Override for your own copy.
+    # Published by scripts/publish_models.py. Public, 571 MB: the current
+    # recommended checkpoints plus the superseded ones, kept so earlier
+    # results stay reproducible. Override for your own copy.
     [string]$ModelsRepo = "mpgowtham/secureagentnet-models",
     [string]$CudaIndex  = "https://download.pytorch.org/whl/cu128",
     [string]$PythonVersion = "3.13",
@@ -104,14 +105,14 @@ if (-not $SkipModels) {
 
 # --- 4. combined_max config -------------------------------------------
 Step 4 "combined_max configuration"
-$members = @("ensemble_v4_persona", "v3")
+$members = @("ensemble_v6_smooth3", "v3")
 $haveAll = $true
 foreach ($m in $members) {
     if (-not (Test-Path (Join-Path $ModelsDir "$m\config.json"))) { $haveAll = $false }
 }
 if ($haveAll) {
-    $CombinedDir = Join-Path $ModelsDir "combined_max"
-    $mk = "from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig; CombinedRiskModel(CombinedRiskModelConfig(members=['ensemble_v4_persona','v3'], mode='max')).save(r'$CombinedDir'); print('  combined_max written (references both members, no weight duplication)')"
+    $CombinedDir = Join-Path $ModelsDir "combined_max_v7"
+    $mk = "from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig; CombinedRiskModel(CombinedRiskModelConfig(members=['ensemble_v6_smooth3','v3'], mode='max')).save(r'$CombinedDir'); print('  combined_max written (references both members, no weight duplication)')"
     & $VenvPython -c $mk
 } else {
     Write-Host "  members not present yet - skipped" -ForegroundColor Yellow
@@ -121,12 +122,13 @@ if ($haveAll) {
 Step 5 "Verifying"
 & $VenvPython -m pytest (Join-Path $RepoRoot "secureagentnet\tests") -q
 Write-Host ""
-if (Test-Path (Join-Path $ModelsDir "combined_max\config.json")) {
+if (Test-Path (Join-Path $ModelsDir "combined_max_v7\config.json")) {
     Write-Host "Ready. Start the app with:" -ForegroundColor Green
-    Write-Host ('  $env:SECUREAGENTNET_MODEL_DIR="' + (Join-Path $ModelsDir "combined_max") + '"')
+    Write-Host ('  $env:SECUREAGENTNET_MODEL_DIR="' + (Join-Path $ModelsDir "combined_max_v7") + '"')
     Write-Host "  .\.venv\Scripts\python.exe -m secureagentnet.webapp.app"
     Write-Host "  then open http://127.0.0.1:5050"
 } else {
     Write-Host "Environment ready, but no checkpoint is installed - the web app needs one." -ForegroundColor Yellow
     Write-Host "Either re-run with -ModelsRepo, or train locally (README: 'Training from scratch')."
 }
+
