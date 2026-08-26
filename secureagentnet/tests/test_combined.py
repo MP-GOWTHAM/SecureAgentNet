@@ -229,3 +229,58 @@ def test_model_name_points_at_the_primary(combined, members):
     """load_tokenizer(model.config.model_name) is what callers use, and it
     must resolve to the primary's byte-level tokenizer."""
     assert combined.config.model_name == str(members["dir_a"])
+
+
+# --------------------------------------------------------------- device
+
+
+def _saved_combined(members, tmp_path):
+    d = tmp_path / "combined"
+    CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(members["dir_b"])], mode="max", max_length=48,
+    )).save(d)
+    return d
+
+
+def _spy_on_torch_load(monkeypatch):
+    """Record the map_location every torch.load call receives."""
+    seen = []
+    real = torch.load
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("map_location"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", spy)
+    return seen
+
+
+def test_load_forwards_map_location_to_members(members, tmp_path, monkeypatch):
+    """This class holds no weights of its own, so an ignored map_location
+    is invisible until a member is loaded on a host that cannot honour the
+    device recorded in its checkpoint."""
+    d = _saved_combined(members, tmp_path)
+    seen = _spy_on_torch_load(monkeypatch)
+    CombinedRiskModel.load(d, map_location="cpu")
+    assert seen == ["cpu", "cpu"]
+
+
+def test_members_load_on_cpu_when_cuda_is_absent(members, tmp_path, monkeypatch):
+    """Every published checkpoint was trained on a GPU, so torch.load
+    restores its tensors to CUDA by default. Constructing a combined model
+    on a CPU-only host must not require the caller to know that -- CI
+    caught this by failing to assemble combined_gated_v7 on a runner."""
+    d = _saved_combined(members, tmp_path)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    seen = _spy_on_torch_load(monkeypatch)
+    CombinedRiskModel.load(d)
+    assert seen == ["cpu", "cpu"]
+
+
+def test_plain_load_defaults_to_cpu_when_cuda_is_absent(members, monkeypatch):
+    """Same default at the shared entry point, so a direct member load
+    gets it too rather than only the combined path."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    seen = _spy_on_torch_load(monkeypatch)
+    InjectionRiskModel.load(str(members["dir_a"]))
+    assert seen == ["cpu"]

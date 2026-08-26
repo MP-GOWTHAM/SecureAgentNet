@@ -104,8 +104,16 @@ class InjectionRiskModel(nn.Module):
         checkpoint loads through the same call site as a DistilBERT one.
         Checkpoints written before `kind` existed have no such key and are
         treated as DistilBERT, so old checkpoints keep loading unchanged.
+
+        `map_location` defaults to CPU on a host without CUDA. torch.load
+        otherwise restores tensors to the device recorded in the file, so
+        every checkpoint this project publishes -- all trained on a GPU --
+        would fail to load on a CPU-only machine unless the caller
+        remembered to pass it.
         """
         save_dir = Path(save_dir)
+        if map_location is None and not torch.cuda.is_available():
+            map_location = "cpu"
         with open(save_dir / "config.json", encoding="utf-8") as f:
             raw = json.load(f)
         if raw.get("kind") == "ensemble":

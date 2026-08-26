@@ -84,7 +84,11 @@ class CombinedRiskModelConfig:
 class CombinedRiskModel(nn.Module):
     """Elementwise max (or mean) over member detectors. See module docstring."""
 
-    def __init__(self, config: CombinedRiskModelConfig):
+    def __init__(
+        self,
+        config: CombinedRiskModelConfig,
+        map_location: str | None = None,
+    ):
         super().__init__()
         self.config = config
 
@@ -93,11 +97,19 @@ class CombinedRiskModel(nn.Module):
         # be circular.
         from .model import InjectionRiskModel, load_tokenizer
 
+        # Member checkpoints are saved wherever they were trained, which for
+        # this project is a CUDA machine. torch.load restores tensors to the
+        # device recorded in the file, so loading one on a CPU-only host
+        # raises unless a map_location is given. Default to CPU when there is
+        # no CUDA rather than making every caller remember.
+        if map_location is None and not torch.cuda.is_available():
+            map_location = "cpu"
+
         self.members = nn.ModuleList()
         self.tokenizers = []
         for name in config.members:
             d = Path(name) if Path(name).is_absolute() else MODELS_DIR / name
-            m = InjectionRiskModel.load(str(d))
+            m = InjectionRiskModel.load(str(d), map_location=map_location)
             m.eval()
             self.members.append(m)
             self.tokenizers.append(load_tokenizer(m.config.model_name))
@@ -180,4 +192,7 @@ class CombinedRiskModel(nn.Module):
         with open(Path(save_dir) / "config.json", encoding="utf-8") as f:
             raw = json.load(f)
         raw.pop("kind", None)
-        return cls(CombinedRiskModelConfig(**raw))
+        # map_location has to reach the member loads: this class holds no
+        # weights of its own, so dropping it here silently ignored the
+        # argument and left the members on their recorded device.
+        return cls(CombinedRiskModelConfig(**raw), map_location=map_location)
