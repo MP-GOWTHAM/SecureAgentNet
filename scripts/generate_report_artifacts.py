@@ -45,8 +45,22 @@ from secureagentnet.simulate.agent_env import ROLES, run_pipeline
 from datetime import datetime, timezone
 
 CSV_PATH = os.environ.get("SECUREAGENTNET_CSV", str(DEFAULT_CSV))
-V1_DIR = str(REPO_ROOT / "secureagentnet" / "data" / "models" / "injection_detector")
-V3_DIR = str(REPO_ROOT / "secureagentnet" / "data" / "models" / "v3")
+# Overridable so the figures can be regenerated against whichever pair is
+# current. They were hardcoded, which silently left the published figures
+# describing checkpoints that had since been superseded.
+#
+# BASELINE_DIR / CURRENT_DIR are the two versions Figure 2 compares; the
+# names v1/v3 are kept for the variables the plotting code already uses.
+V1_DIR = os.environ.get(
+    "SECUREAGENTNET_BASELINE_DIR",
+    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "injection_detector"),
+)
+V3_DIR = os.environ.get(
+    "SECUREAGENTNET_CURRENT_DIR",
+    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "v3"),
+)
+V1_LABEL = os.environ.get("SECUREAGENTNET_BASELINE_LABEL", "v1\n(original)")
+V3_LABEL = os.environ.get("SECUREAGENTNET_CURRENT_LABEL", "v3\n(after Track B\non real evasions)")
 FIG_DIR = str(REPO_ROOT / "secureagentnet" / "reports" / "figures")
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -185,7 +199,7 @@ rounds = list(range(MAX_ROUNDS))
 ax.plot(rounds, evasion_by_round_v3, marker="o", color="#c0392b", linewidth=2)
 ax.set_xlabel("Red-team round")
 ax.set_ylabel("Mean evasion rate across 8 seed attacks")
-ax.set_title("Figure 1: Evasion rate across red-teaming rounds (v3)")
+ax.set_title(f"Figure 1: Evasion rate across red-teaming rounds ({Path(V3_DIR).name})")
 ax.set_ylim(-0.02, max(0.5, max(r for r in evasion_by_round_v3 if r is not None) + 0.1))
 ax.grid(alpha=0.3)
 fig.tight_layout()
@@ -208,17 +222,27 @@ overall_v3 = np.mean([r.evasion_rate for seed in results_v3 for r in seed])
 logger.info("Overall mean evasion rate: v1=%.4f v3=%.4f", overall_v1, overall_v3)
 
 fig, ax = plt.subplots(figsize=(6, 4.5))
-versions = ["v1\n(original)", "v3\n(after Track B\non real evasions)"]
+versions = [V1_LABEL, V3_LABEL]
 values = [overall_v1, overall_v3]
-bars = ax.bar(versions, values, color=["#7f8c8d", "#27ae60"])
+# Colour by direction, not by position. Lower evasion is better, so the
+# smaller bar is green regardless of which version it is -- hardcoding the
+# second bar green implied "newer = improved" and would have mislabelled a
+# regression as a win the first time the comparison changed.
+_better, _worse = "#27ae60", "#c0392b"
+bars = ax.bar(versions, values,
+              color=[_better if values[0] <= values[1] else _worse,
+                     _better if values[1] < values[0] else _worse])
 ax.set_ylabel("Mean evasion rate\n(same red-team protocol, both versions)")
 ax.set_title("Figure 2: Evasion rate across detector versions")
 for bar, v in zip(bars, values):
     ax.text(bar.get_x() + bar.get_width() / 2, v + 0.01, f"{v:.3f}", ha="center")
 ax.set_ylim(0, max(max(values) * 1.3 + 0.05, 0.02))
-note = ("v2 omitted: the v1->v2 Track B cycle found 0 evasions, so v2 differs from v1\n"
-        "only by retraining noise. The 8 real evasions were found against v2 with the\n"
-        "strengthened generator and drove the v2->v3 cycle.")
+note = os.environ.get(
+    "SECUREAGENTNET_FIG2_NOTE",
+    "Lower is better. Measured with the rule-based generator, which no longer\n"
+    "defeats the deployed combination at all (0 evasions in 480 variants), so\n"
+    "this axis only separates single models.",
+)
 # Reserve the bottom strip for the note first, then draw it in that strip, so
 # it can't collide with the multi-line x tick labels (which tight_layout sizes).
 fig.tight_layout(rect=(0, 0.16, 1, 1))

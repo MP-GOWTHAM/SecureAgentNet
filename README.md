@@ -290,6 +290,26 @@ pipeline, against an "undefended" no-op reference — see
 Both at 50 calls/stage against v3. The privilege check is negligible either
 way — pure Python and Pydantic validation; the detector's forward pass is
 what dominates end-to-end latency.
+
+**Per-model latency**, measured on the RTX 5070 (40 calls, 5 warmup):
+
+| Model | Params | Mean | p95 |
+|---|---|---|---|
+| `v3` (DistilBERT) | 66M | **4.76 ms** | 5.39 ms |
+| `ensemble_v6_smooth3` | 12.3M | 12.05 ms | 19.30 ms |
+| `harm_detector_v3` | 12.3M | 12.50 ms | 21.35 ms |
+| `combined_max_v7` (both members) | 78M | 16.38 ms | 26.32 ms |
+
+The from-scratch ensemble is **2.5× slower than DistilBERT despite having
+5.4× fewer parameters**. Parameter count is a poor proxy for latency here:
+the BiLSTM branch is sequential over 256 timesteps and cannot be
+parallelised the way attention can, and the char-view reconstruction adds a
+stable sort per batch.
+
+The recommended runtime configuration therefore costs roughly **29 ms per
+request** (`combined_max_v7` 16.4 + `harm_detector_v3` 12.5), against 4.8 ms
+for DistilBERT alone. That is still negligible beside any LLM call, but it
+is a real 6× increase and worth stating rather than discovering later.
 `overhead_pct_framework_vs_undefended` is reported but is astronomically
 large by construction (undefended is ~0.00004 ms) — quote the absolute
 millisecond figures, not that percentage.
