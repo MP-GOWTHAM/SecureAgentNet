@@ -1,0 +1,94 @@
+{
+  "sweep": [
+    {
+      "gate": 0.0,
+      "val_fpr": 0.07365256602963281,
+      "val_fnr": 0.012748171368861024,
+      "short": 8,
+      "benign_fp": 0,
+      "evasions": 8,
+      "dilution_gap": -0.1496621072292328
+    },
+    {
+      "gate": 0.5,
+      "val_fpr": 0.07365256602963281,
+      "val_fnr": 0.012748171368861024,
+      "short": 8,
+      "benign_fp": 0,
+      "evasions": 8,
+      "dilution_gap": -0.1496621072292328
+    },
+    {
+      "gate": 0.7,
+      "val_fpr": 0.06420442344857204,
+      "val_fnr": 0.016927899686520375,
+      "short": 8,
+      "benign_fp": 0,
+      "evasions": 8,
+      "dilution_gap": -0.1496621072292328
+    },
+    {
+      "gate": 0.8,
+      "val_fpr": 0.06184238780330685,
+      "val_fnr": 0.019644723092998955,
+      "short": 8,
+      "benign_fp": 0,
+      "evasions": 8,
+      "dilution_gap": -0.20159313827753067
+    },
+    {
+      "gate": 0.9,
+      "val_fpr": 0.05969508267124758,
+      "val_fnr": 0.022779519331243468,
+      "short": 8,
+      "benign_fp": 0,
+      "evasions": 8,
+      "dilution_gap": -0.20237798988819122
+    },
+    {
+      "gate": 0.95,
+      "val_fpr": 0.057762508052394246,
+      "val_fnr": 0.02445141065830721,
+      "short": 8,
+      "benign_fp": 0,
+      "evasions": 8,
+      "dilution_gap": -0.20237798988819122
+    },
+    {
+      "gate": 0.98,
+      "val_fpr": 0.05303843676186386,
+      "val_fnr": 0.02884012539184953,
+      "short": 8,
+      "benign_fp": 0,
+      "evasions": 7,
+      "dilution_gap": -0.20237798988819122
+    },
+    {
+      "gate": 0.99,
+      "val_fpr": 0.05024694009018681,
+      "val_fnr": 0.03197492163009404,
+      "short": 7,
+      "benign_fp": 0,
+      "evasions": 7,
+      "dilution_gap": -0.0833267574198544
+    },
+    {
+      "gate": 1.01,
+      "val_fpr": 0.04530813828645051,
+      "val_fnr": 0.046812957157784746,
+      "short": 6,
+      "benign_fp": 0,
+      "evasions": 5,
+      "dilution_gap": 0.01926546497270465
+    }
+  ],
+  "chosen": {
+    "gate": 0.95,
+    "val_fpr": 0.057762508052394246,
+    "val_fnr": 0.02445141065830721,
+    "short": 8,
+    "benign_fp": 0,
+    "evasions": 8,
+    "dilution_gap": -0.20237798988819122
+  }
+}

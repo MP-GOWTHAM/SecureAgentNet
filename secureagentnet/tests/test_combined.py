@@ -107,6 +107,54 @@ def test_mean_mode_takes_elementwise_mean(members):
     assert torch.allclose(model.score_from_texts(TEXTS), (a + b) / 2, atol=1e-5)
 
 
+def test_gated_max_ignores_an_unconfident_secondary(members):
+    """The point of the gate: a secondary below it contributes nothing, so
+    its mid-range false positives cannot drag the combination up. Plain max
+    inherits close to the union of both members' false positives -- FPR
+    0.208 for the primary alone against 0.415 for max."""
+    model = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(members["dir_b"])],
+        mode="gated_max", gate=1.01, max_length=48,
+    ))
+    a, _ = _member_scores(members, TEXTS)
+    # gate above 1.0 is unreachable, so this must reduce to the primary.
+    assert torch.allclose(model.score_from_texts(TEXTS), a, atol=1e-5)
+
+
+def test_gated_max_with_zero_gate_is_plain_max(combined, members):
+    """At gate 0 every score clears it, so the rule must degenerate to max
+    -- otherwise the gate would be changing behaviour it should not."""
+    model = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(members["dir_b"])],
+        mode="gated_max", gate=0.0, max_length=48,
+    ))
+    a, b = _member_scores(members, TEXTS)
+    assert torch.allclose(model.score_from_texts(TEXTS), torch.maximum(a, b), atol=1e-5)
+
+
+def test_gated_max_never_falls_below_the_primary(members):
+    """A confident secondary may raise the score; nothing may lower it."""
+    model = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(members["dir_b"])],
+        mode="gated_max", gate=0.5, max_length=48,
+    ))
+    a, _ = _member_scores(members, TEXTS)
+    assert (model.score_from_texts(TEXTS) >= a - 1e-5).all()
+
+
+def test_gate_survives_save_load(members, tmp_path):
+    model = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(members["dir_b"])],
+        mode="gated_max", gate=0.95, max_length=48,
+    ))
+    model.save(tmp_path)
+    restored = InjectionRiskModel.load(tmp_path)
+    assert restored.config.mode == "gated_max"
+    assert restored.config.gate == 0.95
+    assert torch.allclose(
+        restored.score_from_texts(TEXTS), model.score_from_texts(TEXTS), atol=1e-6)
+
+
 def test_max_is_never_below_either_member(combined, members):
     """The whole point of max: a member that catches something cannot be
     outvoted by one that misses it."""

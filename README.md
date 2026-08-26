@@ -659,10 +659,28 @@ python scripts\publish_models.py --repo-id <user>/secureagentnet-models
 
 | Goal | `SECUREAGENTNET_MODEL_DIR` | Trade-off |
 |---|---|---|
-| **Maximum security** (recommended) | `combined_max` | FNR 0.035, 8/8 short attacks, 8/8 evasions; FPR 0.431 |
-| Maximum utility | `ensemble_v5_fpr` | FPR 0.328, utility 0.672; misses 1 short attack |
-| Best single model | `ensemble_v4_persona` | AUC 0.8278; misses 1 short attack |
-| Comparable with prior work | `v3` | Misses the dilution evasion |
+| **Balanced** (the default) | `combined_gated_v7` | FPR 0.368, utility 0.654, 8/8 short attacks, 8/8 evasions; ASR 0.038 |
+| Maximum security | `combined_max_v7` | ASR 0.025, FNR 0.029, same coverage; FPR 0.415 |
+| Maximum utility | `ensemble_v9_bal` | FPR 0.189, utility 0.811; misses 2 short attacks |
+| Best single detector | `ensemble_v6_smooth3` | AUC 0.9168; misses 2 short attacks, 5/8 evasions |
+| Comparable with prior work | `v3` | Misses the dilution evasion, FPR 0.405 |
+
+`combined_gated_v7` is `max(ensemble_v6_smooth3, v3)` with the second
+member gated at 0.95 — it only contributes where it is confident.
+
+**Why the gate exists.** Plain `max` fires whenever *either* member fires,
+so it inherits close to the union of their false positives: the primary
+alone is FPR 0.208, `max` is 0.415. DistilBERT's useful contribution is
+concentrated in its confident predictions (it scores the short attacks the
+primary misses at 0.98–0.99), so gating keeps the rescues and drops the
+mid-range noise: FPR 0.415 → 0.368 with identical probe coverage.
+
+It is a partial fix, not a complete one. The validation sweep
+(`scripts/tune_gated_max.py`) shows FPR falling smoothly across the whole
+gate range with no clean break — **DistilBERT's false positives are
+high-confidence too**, so they cannot all be gated away. Closing the
+remaining gap means replacing that member with a better-calibrated one,
+not tuning this knob further.
 
 Set `SECUREAGENTNET_HARM_MODEL_DIR` to point the content-harm classifier
 elsewhere; it defaults to `secureagentnet\data\models\harm_detector` and is

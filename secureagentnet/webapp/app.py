@@ -55,12 +55,30 @@ logger = logging.getLogger("webapp")
 
 MODEL_DIR = os.environ.get(
     "SECUREAGENTNET_MODEL_DIR",
-    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "v3"),
+    # combined_gated_v7: max(ensemble_v6_smooth3, v3) with the secondary
+    # gated at 0.95. Catches 8/8 canonical short attacks and 8/8 real
+    # evasions -- the coverage plain max gives -- at FPR 0.368 rather than
+    # 0.415 and utility 0.654 rather than 0.621.
+    #
+    # Falls back to v3 if that config is absent, so a checkout without the
+    # downloaded checkpoints still starts against whatever is present.
+    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "combined_gated_v7"),
 )
+if not (Path(MODEL_DIR) / "config.json").exists():
+    _fallback = REPO_ROOT / "secureagentnet" / "data" / "models" / "v3"
+    if (_fallback / "config.json").exists():
+        MODEL_DIR = str(_fallback)
 HARM_MODEL_DIR = Path(os.environ.get(
     "SECUREAGENTNET_HARM_MODEL_DIR",
-    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "harm_detector"),
+    # v3 is the two-source classifier: wider margin (harmful mean 0.769 vs
+    # 0.652) and no false fires on benign roleplay, which matters because
+    # block_harm_threshold is a hard block rather than a flag.
+    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "harm_detector_v3"),
 ))
+if not (HARM_MODEL_DIR / "config.json").exists():
+    _harm_fallback = REPO_ROOT / "secureagentnet" / "data" / "models" / "harm_detector"
+    if (_harm_fallback / "config.json").exists():
+        HARM_MODEL_DIR = _harm_fallback
 CREDENTIAL_TTL_SECONDS = 24 * 3600
 
 # Sensible default (tool_name, resource) per role — the tool call that

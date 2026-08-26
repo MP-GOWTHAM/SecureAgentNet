@@ -55,9 +55,27 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "data" / "models"
 class CombinedRiskModelConfig:
     # Member checkpoint directory names under data/models. The first is the
     # primary: its tokenizer defines the decode path, so it must be the
-    # byte-level one for the round-trip to be lossless.
+    # byte-level one for the round-trip to be lossless. Under "gated_max"
+    # the primary is also the member that is always trusted.
     members: list[str] = field(default_factory=lambda: ["ensemble_v4_persona", "v3"])
-    mode: str = "max"  # "max" or "mean"
+    mode: str = "max"  # "max", "mean", or "gated_max"
+    gate: float = 0.9
+    """Confidence floor for non-primary members under `mode="gated_max"`.
+
+    Plain max inherits close to the union of every member's false
+    positives, which is its one real cost: the primary alone scores FPR
+    0.208 while max(primary, v3) scores 0.415, because max fires whenever
+    *either* member fires.
+
+    The asymmetry worth exploiting is that the secondary's value is
+    concentrated in its confident predictions -- DistilBERT scores the
+    canonical short attacks the primary misses at 0.98-0.99 -- while its
+    false positives are spread across the middle of the range. So a
+    secondary score below `gate` contributes nothing, and above it behaves
+    exactly like max. Coverage from high-confidence rescues is kept;
+    mid-range false positives are discarded.
+
+    Tune on validation scores and confirm once on the holdout."""
     max_length: int = 256
     model_name: str = ""  # primary member's dir, for load_tokenizer()
     kind: str = "combined"
@@ -109,7 +127,21 @@ class CombinedRiskModel(nn.Module):
                                              enc["attention_mask"].to(device)).float())
             per_member.append(torch.cat(out) if out else torch.empty(0, device=device))
         stacked = torch.stack(per_member)
-        return stacked.max(dim=0).values if self.config.mode == "max" else stacked.mean(dim=0)
+
+        if self.config.mode == "mean":
+            return stacked.mean(dim=0)
+        if self.config.mode == "gated_max":
+            # Primary is always trusted; every other member only counts
+            # where it clears the gate. Zeroing (rather than dropping) is
+            # what makes this reduce to the primary when no secondary is
+            # confident, and to plain max when they all are.
+            primary = stacked[0]
+            others = stacked[1:]
+            if others.numel() == 0:
+                return primary
+            gated = torch.where(others >= self.config.gate, others, torch.zeros_like(others))
+            return torch.maximum(primary, gated.max(dim=0).values)
+        return stacked.max(dim=0).values
 
     @torch.no_grad()
     def risk_score(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:

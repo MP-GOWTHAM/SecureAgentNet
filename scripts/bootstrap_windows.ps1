@@ -13,7 +13,7 @@
          253 MB each against GitHub's 100 MB per-file hard limit, so they
          are published to the Hugging Face Hub instead (see
          scripts/publish_models.py).
-      3. The `combined_max_v7` config, which just references two downloaded
+      3. The `combined_gated_v7` config, which just references two downloaded
          members and is written locally.
 
     NOTE: this file is deliberately pure ASCII. Windows PowerShell 5.1
@@ -103,16 +103,16 @@ if (-not $SkipModels) {
     }
 }
 
-# --- 4. combined_max config -------------------------------------------
-Step 4 "combined_max configuration"
+# --- 4. combined_gated_v7 config --------------------------------------
+Step 4 "combined_gated_v7 configuration"
 $members = @("ensemble_v6_smooth3", "v3")
 $haveAll = $true
 foreach ($m in $members) {
     if (-not (Test-Path (Join-Path $ModelsDir "$m\config.json"))) { $haveAll = $false }
 }
 if ($haveAll) {
-    $CombinedDir = Join-Path $ModelsDir "combined_max_v7"
-    $mk = "from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig; CombinedRiskModel(CombinedRiskModelConfig(members=['ensemble_v6_smooth3','v3'], mode='max')).save(r'$CombinedDir'); print('  combined_max written (references both members, no weight duplication)')"
+    $CombinedDir = Join-Path $ModelsDir "combined_gated_v7"
+    $mk = "from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig; CombinedRiskModel(CombinedRiskModelConfig(members=['ensemble_v6_smooth3','v3'], mode='gated_max', gate=0.95)).save(r'$CombinedDir'); print('  combined_gated_v7 written (gate 0.95, references both members)')"
     & $VenvPython -c $mk
 } else {
     Write-Host "  members not present yet - skipped" -ForegroundColor Yellow
@@ -122,13 +122,14 @@ if ($haveAll) {
 Step 5 "Verifying"
 & $VenvPython -m pytest (Join-Path $RepoRoot "secureagentnet\tests") -q
 Write-Host ""
-if (Test-Path (Join-Path $ModelsDir "combined_max_v7\config.json")) {
+if (Test-Path (Join-Path $ModelsDir "combined_gated_v7\config.json")) {
     Write-Host "Ready. Start the app with:" -ForegroundColor Green
-    Write-Host ('  $env:SECUREAGENTNET_MODEL_DIR="' + (Join-Path $ModelsDir "combined_max_v7") + '"')
+    Write-Host ('  $env:SECUREAGENTNET_MODEL_DIR="' + (Join-Path $ModelsDir "combined_gated_v7") + '"')
     Write-Host "  .\.venv\Scripts\python.exe -m secureagentnet.webapp.app"
     Write-Host "  then open http://127.0.0.1:5050"
 } else {
     Write-Host "Environment ready, but no checkpoint is installed - the web app needs one." -ForegroundColor Yellow
     Write-Host "Either re-run with -ModelsRepo, or train locally (README: 'Training from scratch')."
 }
+
 
