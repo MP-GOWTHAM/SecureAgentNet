@@ -73,21 +73,44 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-windows.txt
 
+      # The cache key must identify the *checkpoints*, not something that
+      # correlates with them. Keying on a script hash meant republishing
+      # retrained weights without touching that script would restore a
+      # stale cache, snapshot_download would find the files already there
+      # and skip, and the probes would assert against the old model while
+      # reporting green.
+      - name: Resolve checkpoint revision
+        id: ckpt
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          sha = HfApi().model_info("mpgowtham/secureagentnet-models").sha
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"sha={sha}\n")
+          print(f"checkpoint revision {sha}")
+          PY
+
       - name: Cache checkpoints
         uses: actions/cache@v4
         with:
           path: secureagentnet/data/models
-          key: checkpoints-${{ hashFiles('scripts/publish_models.py') }}-v1
+          key: checkpoints-${{ steps.ckpt.outputs.sha }}
 
       - name: Download checkpoints
+        env:
+          CKPT_SHA: ${{ steps.ckpt.outputs.sha }}
         run: |
           python - <<'PY'
+          import os
           from pathlib import Path
           from huggingface_hub import snapshot_download
           dest = Path("secureagentnet/data/models")
-          # Only the two members the default configuration needs.
+          # Pinned to the revision the cache key was built from, so the
+          # key and the contents cannot describe different weights.
           snapshot_download(
               repo_id="mpgowtham/secureagentnet-models",
+              revision=os.environ["CKPT_SHA"],
               local_dir=str(dest),
               allow_patterns=["ensemble_v6_smooth3/*", "v3/*"],
           )
@@ -113,9 +136,10 @@ jobs:
             --verbose
 
       - name: Evasion regression check
-        # evasions.json is not in the repo, so this self-skips unless a set
-        # is present. Kept in CI so it starts enforcing as soon as one is
-        # committed or restored from cache.
+        # Reads the tracked set at secureagentnet/tests/fixtures/evasions.json.
+        # With thresholds passed, a missing set is a hard failure (exit 2)
+        # rather than a skip: this step previously skipped on every run,
+        # because it looked only in a scratch directory no runner has.
         run: |
           python scripts/check_evasions.py \
             --model-dir secureagentnet/data/models/combined_gated_v7 \

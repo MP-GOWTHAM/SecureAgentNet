@@ -15,11 +15,15 @@ silently destroying evasion coverage:
 
 Neither would have been caught by a test on AUC, F1 or FPR.
 
-The evasion set is `evasions.json`, produced by scripts/find_evasions.py.
+The evasion set is tracked at secureagentnet/tests/fixtures/evasions.json
+so that CI has something to check against -- it was previously read only
+from the scratch run directory, which no CI runner ever has, so the check
+skipped on every run while appearing to pass.
+
 Note that it is a *fixed historical* set: the deployed combination now
 catches all 8 at minimum score 0.759, so this guards against regression
 rather than measuring current robustness. Re-run find_evasions.py against
-the current model to generate a harder set.
+the current model to generate a harder set, then pass it with --evasions.
 
 Usage:
     python scripts/check_evasions.py --model-dir <dir> --min-caught 8
@@ -44,7 +48,15 @@ from secureagentnet.detector.train import pick_device
 
 RUN_DIR = Path(os.environ.get(
     "SECUREAGENTNET_RUN_DIR", Path(tempfile.gettempdir()) / "secureagentnet_run"))
+# Tracked, so CI has a set to check. A freshly generated one in the run
+# directory wins when present, since that is the harder, current set.
+FIXTURE = REPO_ROOT / "secureagentnet" / "tests" / "fixtures" / "evasions.json"
 THRESHOLD = 0.5
+
+
+def default_evasions() -> Path:
+    generated = RUN_DIR / "evasions.json"
+    return generated if generated.exists() else FIXTURE
 
 
 def main() -> None:
@@ -54,18 +66,23 @@ def main() -> None:
                    help="exit non-zero if fewer than this many evasions are caught")
     p.add_argument("--min-mean-score", type=float, default=None,
                    help="exit non-zero if the mean score falls below this (margin, not just count)")
-    p.add_argument("--evasions", default=str(RUN_DIR / "evasions.json"))
+    p.add_argument("--evasions", default=None)
     a = p.parse_args()
 
-    path = Path(a.evasions)
-    if not path.exists():
-        print(f"SKIP: no evasion set at {path} (run scripts/find_evasions.py first)")
+    asserting = a.min_caught is not None or a.min_mean_score is not None
+    path = Path(a.evasions) if a.evasions else default_evasions()
+
+    if not path.exists() or not (evasions := json.loads(path.read_text(encoding="utf-8"))):
+        # Skipping silently while asserting would make this check useless
+        # exactly when its input went missing -- the failure it is meant to
+        # catch would sail through as a pass.
+        if asserting:
+            print(f"FAIL: assertions requested but no usable evasion set at {path}")
+            raise SystemExit(2)
+        print(f"SKIP: no usable evasion set at {path} (run scripts/find_evasions.py first)")
         raise SystemExit(0)
 
-    evasions = json.loads(path.read_text(encoding="utf-8"))
-    if not evasions:
-        print(f"SKIP: {path} is empty — nothing to check against")
-        raise SystemExit(0)
+    print(f"evasion set: {path} ({len(evasions)} entries)")
 
     device = pick_device()
     model = InjectionRiskModel.load(a.model_dir, map_location=str(device)).to(device)
@@ -101,7 +118,7 @@ def main() -> None:
         for f in failures:
             print(f"  - {f}")
         raise SystemExit(1)
-    if a.min_caught is not None or a.min_mean_score is not None:
+    if asserting:
         print("\nPASS")
 
 
