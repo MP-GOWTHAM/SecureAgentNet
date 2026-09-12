@@ -479,6 +479,11 @@ CSV_SOURCE_MAP = {
     "hf_csv5": "smooth3",
     "hf_csv6": "jayavibhav",
     "hf_csv7": "imoxto",
+    # Conversation-level rows from scripts/build_multiturn_dataset.py. One
+    # row is one conversation, not one turn -- a crescendo is defined by
+    # the escalation across turns, so per-turn rows destroy the signal.
+    "hf_csv8": "safemtdata_crescendo",
+    "hf_csv9": "gibbs_multiturn",
 }
 # Only hf_csv2 (qualifire) is the held-out benchmark; everything else is
 # pooled into train/val regardless of the CSV's own train/validation split
