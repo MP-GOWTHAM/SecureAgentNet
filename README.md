@@ -198,10 +198,21 @@ measured it against the held-out benchmark:
 | 7 sources, imoxto rebalanced 50/50 | 331,517 | 0.8929 |
 | **5 sources, balanced** | **111,517** | **0.9168** |
 
-More rows did not help; **source balance did**. Adding one length-neutral
-source moved AUC 0.8278 → 0.9168 and FPR 0.363 → 0.208, while adding 1.1M
-extra Necent rows cost 0.078 AUC. That is why `Necent` is capped at 30k and
-`imoxto` is both capped and rebalanced.
+More rows did not help; **source balance did**. Adding 1.1M extra Necent
+rows cost 0.078 AUC, which is why `Necent` is capped at 30k and `imoxto`
+is both capped and rebalanced.
+
+> **Correction — the 0.9168 row is inflated.** That figure came from a
+> corpus where 9.1% of the Smooth-3 source was verbatim qualifire text,
+> covering 81.6% of the 5000-row benchmark. The leak was fixed in
+> `136d240`; the loader now drops any training row whose normalised text
+> appears in the holdout source. Retrained leak-free with the same recipe,
+> the same architecture scores **AUC 0.8125**, essentially flat against
+> the 0.809 the older four-source corpus gave. The claim that one
+> length-neutral source moved AUC 0.8278 → 0.9168 and FPR 0.363 → 0.208
+> does not survive the fix; that gain was mostly memorisation of the
+> benchmark. Every cross-source number elsewhere in this README is
+> post-fix.
 
 `secureagentnet/detector/data_loader.py` normalizes all of them into one
 schema (`text`, `label`, `category`, `source`), dedups by exact text hash,
@@ -678,13 +689,51 @@ python scripts\publish_models.py --repo-id <user>/secureagentnet-models
 
 ### Which model to run
 
-| Goal | `SECUREAGENTNET_MODEL_DIR` | Trade-off |
-|---|---|---|
-| **Balanced** (the default) | `combined_gated_v7` | FPR 0.368, utility 0.654, 8/8 short attacks, 8/8 evasions; ASR 0.038 |
-| Maximum security | `combined_max_v7` | ASR 0.025, FNR 0.029, same coverage; FPR 0.415 |
-| Maximum utility | `ensemble_v9_bal` | FPR 0.189, utility 0.811; misses 2 short attacks |
-| Best single detector | `ensemble_v6_smooth3` | AUC 0.9168; misses 2 short attacks, 5/8 evasions |
-| Comparable with prior work | `v3` | Misses the dilution evasion, FPR 0.405 |
+**Read the protocol column before comparing any two rows.** The two
+protocols answer different questions and their numbers are not
+interchangeable.
+
+*In-domain* means the model trained on 80% of the qualifire benchmark and
+was measured on the held-out 20%. It tells you how the detector performs
+on traffic that looks like its training distribution. It carries **no
+generalisation guarantee**, and for such a model there is no valid
+cross-source figure at all — the cross-source holdout is its training
+data.
+
+*Cross-source* means the entire qualifire source was held out, so the
+model had to generalise to a labelling convention it never saw. Those
+numbers are much lower and mean considerably more.
+
+| Goal | `SECUREAGENTNET_MODEL_DIR` | Protocol | Trade-off |
+|---|---|---|---|
+| **In-domain accuracy** (the default) | `combined_indomain_v14` | in-domain | accuracy 0.9240, FPR 0.0768, FNR 0.0748, AUC 0.9807; 8/8 short, 8/8 evasions, 1/4 benign controls |
+| **Generalisation** | `combined_mean_v13` | cross-source | accuracy 0.7212, FPR 0.3884, FNR 0.1148, AUC 0.8173; 8/8 short, 0/4 benign, 8/8 evasions |
+| Previous default | `combined_gated_v7` | cross-source | FPR 0.3961, FNR 0.1193; no multi-turn coverage (FPR 0.495 on benign conversations) |
+| Maximum security | `combined_max_v7` | cross-source | ASR 0.025, FNR 0.029, same coverage; FPR 0.415 |
+| Comparable with prior work | `v3` | cross-source | Misses the dilution evasion, FPR 0.405 |
+
+`combined_indomain_v14` is `mean(distilbert_id93, tfidf_id93)` with the
+validation-tuned operating point (0.601) folded into the score, so the
+standard 0.5 cut is correct and every downstream threshold — the fusion
+layer's flag at 0.3 and block at 0.85 — keeps the meaning it already had.
+Build it with `scripts/build_indomain_split.py`.
+
+**How the in-domain configuration reaches 0.9240 when the cross-source one
+sits at 0.7212.** Almost none of that gap is model quality. Sweeping every
+threshold on the cross-source model tops out at 0.7284 — that is the best
+point on its ROC curve. Its false positives have median length 756
+characters against 266 for benign overall: they are long roleplay prompts
+that the training sources label as attacks and qualifire labels as benign.
+Training on qualifire's own convention removes that disagreement, which is
+worth about 18 points; ensembling and threshold tuning add roughly 2 more.
+
+Two caveats that travel with the in-domain number. Training on qualifire
+alone collapses attack coverage to 3/8 canonical short attacks, because
+those models never see a bare imperative injection — `--add-other-attacks`
+restores 8/8 by keeping the other sources' attacks and dropping their
+conflicting benign rows, capped at the swept knee of 1000 rows. And 93%
+was not reached: five-fold cross-validation over all 5000 qualifire rows
+puts the single-model estimate at 0.9102, 95% CI [0.9023, 0.9181].
 
 `combined_gated_v7` is `max(ensemble_v6_smooth3, v3)` with the second
 member gated at 0.95 — it only contributes where it is confident.

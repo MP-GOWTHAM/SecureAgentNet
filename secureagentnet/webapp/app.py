@@ -56,22 +56,28 @@ logger = logging.getLogger("webapp")
 
 _MODELS = REPO_ROOT / "secureagentnet" / "data" / "models"
 
-# combined_mean_v13: mean(ensemble_v12_mt, v3, tfidf_char_v1).
+# combined_indomain_v14: mean(distilbert_id93, tfidf_id93), with the
+# validation-tuned operating point (0.601) folded into the score so the
+# standard 0.5 cut is correct and the fusion thresholds keep their meaning.
 #
-# Keeps full coverage -- 8/8 canonical short attacks, 0/4 benign controls,
-# 8/8 real evasions -- and holds the benchmark where combined_gated_v7 had
-# it (AUC 0.817, FPR 0.388, FNR 0.115) while fixing two things that config
-# could not:
+#   in-domain held-out, 1000 rows:  accuracy 0.9240, FPR 0.0768, FNR 0.0748,
+#                                   AUC 0.9807, 8/8 short, 8/8 evasions
 #
-#   multi-turn conversations   AUC 0.699 -> 0.809, FPR 0.495 -> 0.155
-#   crescendo attacks          recall 0.179 -> 0.916 at the member level
+# READ THIS BEFORE QUOTING THAT NUMBER. It is IN-DOMAIN: the members
+# trained on 80% of the qualifire benchmark, so this configuration has no
+# valid cross-source figure -- the cross-source holdout is its own
+# training data. It is the right choice when deployment traffic resembles
+# qualifire, and the wrong one if you need a generalisation guarantee.
 #
-# The third member is a TF-IDF char n-gram model rather than a network; it
-# is the single strongest detector on this benchmark and costs 0.7 ms.
+# combined_mean_v13 is the cross-source-validated alternative: accuracy
+# 0.7212 / AUC 0.8173 measured against a benchmark it never trained on.
+# That number is lower and means more. Set SECUREAGENTNET_MODEL_DIR to it
+# if generalisation matters more than in-domain accuracy.
 #
-# Each fallback below is a strict subset of the one above, so a checkout
-# with only some checkpoints downloaded still starts.
-_MODEL_CANDIDATES = ("combined_mean_v13", "combined_gated_v7", "v3")
+# Each fallback below is usable on its own, so a checkout with only some
+# checkpoints downloaded still starts.
+_MODEL_CANDIDATES = ("combined_indomain_v14", "combined_mean_v13",
+                     "combined_gated_v7", "v3")
 
 MODEL_DIR = os.environ.get("SECUREAGENTNET_MODEL_DIR")
 if not MODEL_DIR:

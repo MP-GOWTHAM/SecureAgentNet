@@ -277,6 +277,61 @@ def test_members_load_on_cpu_when_cuda_is_absent(members, tmp_path, monkeypatch)
     assert seen == ["cpu", "cpu"]
 
 
+# ------------------------------------------------ decision threshold
+
+
+def test_decision_threshold_moves_the_operating_point_to_half(members):
+    """A tuned threshold carried beside the model would be ignored by the
+    fusion layer, the probes and the calibration layer, all of which cut at
+    0.5. Folding it into the score is what makes them agree."""
+    raw = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(members["dir_b"])],
+        mode="mean", max_length=48))
+    s = raw.score_from_texts(TEXTS)
+    t = float(s.mean())          # pick a threshold that actually splits these
+
+    shifted = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(members["dir_b"])],
+        mode="mean", max_length=48, decision_threshold=t))
+    s2 = shifted.score_from_texts(TEXTS)
+
+    # rows at the old threshold land at 0.5; the decision at 0.5 on the
+    # shifted scores matches the decision at t on the raw ones
+    assert ((s2 >= 0.5) == (s >= t)).all()
+
+
+def test_decision_threshold_preserves_ranking(members):
+    """The shift is monotonic, so AUC and every ordering are untouched."""
+    cfg = dict(members=[str(members["dir_a"]), str(members["dir_b"])],
+               mode="mean", max_length=48)
+    raw = CombinedRiskModel(CombinedRiskModelConfig(**cfg)).score_from_texts(TEXTS)
+    shifted = CombinedRiskModel(CombinedRiskModelConfig(
+        **cfg, decision_threshold=0.601)).score_from_texts(TEXTS)
+    assert torch.equal(torch.argsort(raw), torch.argsort(shifted))
+    assert ((shifted >= 0) & (shifted <= 1)).all()
+
+
+def test_decision_threshold_defaults_to_no_op(members):
+    """Unset must be byte-identical, so existing checkpoints are unchanged."""
+    cfg = dict(members=[str(members["dir_a"]), str(members["dir_b"])],
+               mode="mean", max_length=48)
+    a = CombinedRiskModel(CombinedRiskModelConfig(**cfg)).score_from_texts(TEXTS)
+    b = CombinedRiskModel(CombinedRiskModelConfig(
+        **cfg, decision_threshold=None)).score_from_texts(TEXTS)
+    assert torch.equal(a, b)
+
+
+def test_decision_threshold_survives_save_load(members, tmp_path):
+    m = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(members["dir_b"])],
+        mode="mean", max_length=48, decision_threshold=0.601))
+    before = m.score_from_texts(TEXTS)
+    m.save(tmp_path)
+    loaded = InjectionRiskModel.load(tmp_path)
+    assert loaded.config.decision_threshold == 0.601
+    assert torch.allclose(before, loaded.score_from_texts(TEXTS), atol=1e-6)
+
+
 # --------------------------------------------- sklearn (text-in) members
 
 

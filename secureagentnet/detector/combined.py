@@ -42,6 +42,7 @@ downstream changes.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -59,6 +60,15 @@ class CombinedRiskModelConfig:
     # the primary is also the member that is always trusted.
     members: list[str] = field(default_factory=lambda: ["ensemble_v4_persona", "v3"])
     mode: str = "max"  # "max", "mean", or "gated_max"
+    decision_threshold: float | None = None
+    """Operating point tuned on validation, folded into the score.
+
+    When set, scores are shifted in logit space so this threshold lands at
+    0.5 (see `_recalibrate`). Leave it None to keep raw combined scores.
+    It exists because everything downstream -- the fusion layer, the
+    probes, the calibration layer -- is written against 0.5, so a tuned
+    threshold carried separately would be silently ignored by all of them.
+    """
     gate: float = 0.9
     """Confidence floor for non-primary members under `mode="gated_max"`.
 
@@ -140,16 +150,43 @@ class CombinedRiskModel(nn.Module):
             self.tokenizers.append(load_tokenizer(m.config.model_name))
 
         if not config.model_name:
-            primary = config.members[0]
-            self.config.model_name = str(
-                Path(primary) if Path(primary).is_absolute() else MODELS_DIR / primary
-            )
+            # Take the primary's OWN tokenizer reference, not its directory.
+            # For a from-scratch ensemble those coincide (the byte-level
+            # tokenizer is saved beside the weights), but a DistilBERT
+            # member's directory holds only config.json and model.pt -- its
+            # tokenizer is "distilbert-base-uncased". Pointing at the
+            # directory made load_tokenizer fail to instantiate a backend
+            # whenever the primary was a DistilBERT.
+            self.config.model_name = self.members[0].config.model_name
 
     # ------------------------------------------------------------------ scoring
 
     @property
     def _device(self) -> torch.device:
         return next(self.members[0].parameters()).device
+
+    def _recalibrate(self, p: torch.Tensor) -> torch.Tensor:
+        """Move the operating point to 0.5 without changing the ranking.
+
+        A tuned decision threshold is useless on its own here: everything
+        downstream -- the fusion layer's flag at 0.3 and block at 0.85, the
+        calibration layer, the probes -- is written against 0.5. Shipping a
+        model whose real operating point is 0.601 while the pipeline still
+        cuts at 0.85 would mean the deployed behaviour is not the behaviour
+        that was measured.
+
+        So the threshold is folded into the score instead, as a shift in
+        logit space: p' = sigmoid(logit(p) - logit(t)). At p == t this is
+        exactly 0.5, the map is strictly increasing, and AUC is unchanged.
+        Every downstream threshold keeps the meaning it already had.
+        """
+        t = self.config.decision_threshold
+        if t is None:
+            return p
+        eps = 1e-6
+        pc = p.clamp(eps, 1 - eps)
+        shift = math.log(t / (1 - t))
+        return torch.sigmoid(torch.log(pc / (1 - pc)) - shift)
 
     @torch.no_grad()
     def score_from_texts(self, texts: list[str], batch_size: int = 32) -> torch.Tensor:
@@ -174,7 +211,7 @@ class CombinedRiskModel(nn.Module):
         stacked = torch.stack([by_kind[kind][idx] for kind, idx in self._order])
 
         if self.config.mode == "mean":
-            return stacked.mean(dim=0)
+            return self._recalibrate(stacked.mean(dim=0))
         if self.config.mode == "gated_max":
             # Primary is always trusted; every other member only counts
             # where it clears the gate. Zeroing (rather than dropping) is

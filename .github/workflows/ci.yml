@@ -55,6 +55,13 @@ jobs:
   # FPR and lost 7/8 -> 0/8 evasions, and adding a corpus improved AUC
   # 0.8278 -> 0.9168 while dropping the standalone model to 5/8 short
   # attacks. No test on AUC, F1 or FPR would have failed.
+  #
+  # NOTE: this probes combined_gated_v7, which is NOT the deployed default
+  # any more -- that is combined_indomain_v14. It is what CI can probe,
+  # because only these members are published to the Hub. The newer
+  # checkpoints (ensemble_v12_mt, tfidf_char_v1, distilbert_id93,
+  # tfidf_id93) are local-only. Publish them and update the members below
+  # to have CI gate what actually ships.
   # ---------------------------------------------------------------------
   probes:
     name: Behavioural probes

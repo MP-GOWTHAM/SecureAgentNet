@@ -107,7 +107,17 @@ if (-not $SkipModels) {
 # combined_mean_v13 is the default the web app looks for first. Its third
 # member is an sklearn pipeline (model.joblib) rather than a checkpoint
 # directory, so it is checked the same way but loads differently.
-Step 4 "combined_mean_v13 configuration"
+Step 4 "combined configuration"
+$v14members = @("distilbert_id93\config.json", "tfidf_id93\model.joblib")
+$haveV14 = $true
+foreach ($m in $v14members) {
+    if (-not (Test-Path (Join-Path $ModelsDir $m))) { $haveV14 = $false }
+}
+if ($haveV14) {
+    $V14Dir = Join-Path $ModelsDir "combined_indomain_v14"
+    $mk14 = "from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig; CombinedRiskModel(CombinedRiskModelConfig(members=['distilbert_id93','tfidf_id93'], mode='mean', decision_threshold=0.601)).save(r'$V14Dir'); print('  combined_indomain_v14 written (mean of two, operating point 0.601 folded in)')"
+    & $VenvPython -c $mk14
+}
 $v13members = @("ensemble_v12_mt\config.json", "v3\config.json", "tfidf_char_v1\model.joblib")
 $haveV13 = $true
 foreach ($m in $v13members) {
@@ -138,7 +148,7 @@ Step 5 "Verifying"
 & $VenvPython -m pytest (Join-Path $RepoRoot "secureagentnet\tests") -q
 Write-Host ""
 $installed = $null
-foreach ($c in @("combined_mean_v13", "combined_gated_v7", "v3")) {
+foreach ($c in @("combined_indomain_v14", "combined_mean_v13", "combined_gated_v7", "v3")) {
     if (Test-Path (Join-Path $ModelsDir "$c\config.json")) { $installed = $c; break }
 }
 if ($installed) {
