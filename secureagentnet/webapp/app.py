@@ -38,6 +38,7 @@ from secureagentnet.correlation.adaptive_risk_engine import RiskSignals
 from secureagentnet.correlation.closed_loop import AttackMemoryIndex, CalibrationConfig, CalibrationLayer
 from secureagentnet.correlation.fusion import FusionAction, FusionEngine
 from secureagentnet.detector.model import InjectionRiskModel, load_tokenizer
+from secureagentnet.detector.text_normalize import strip_chat_template
 from secureagentnet.detector.train import pick_device
 from secureagentnet.eval.red_team import LLMAttackGenerator, RuleBasedAttackGenerator, StoppingCondition, run_red_team_loop
 from secureagentnet.privilege.memory_protection import MemoryProtectionLayer, MemoryWriteRequest
@@ -223,6 +224,7 @@ class Pipeline:
         """Content-harm probability, or 0.0 when no classifier is loaded."""
         if self.harm_model is None:
             return 0.0
+        text = strip_chat_template(text)
         enc = self.harm_tokenizer(
             [text], padding=True, truncation=True,
             max_length=self.harm_model.config.max_length, return_tensors="pt",
@@ -232,11 +234,17 @@ class Pipeline:
                 enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device))[0])
 
     def score(self, text: str) -> float:
+        # Chat scaffolding is stripped before scoring: the corpus taught
+        # older checkpoints that it means benign, so wrapping an attack in
+        # it dropped detection from 7/8 to 3/8. Removing the wrapper closes
+        # that against checkpoints that already learned the association.
+        text = strip_chat_template(text)
         enc = self.tokenizer([text], padding=True, truncation=True, max_length=self.model.config.max_length, return_tensors="pt")
         with torch.no_grad():
             return float(self.model.risk_score(enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device))[0])
 
     def embed(self, text: str):
+        text = strip_chat_template(text)
         enc = self.tokenizer([text], padding=True, truncation=True, max_length=self.model.config.max_length, return_tensors="pt")
         with torch.no_grad():
             vec = self.model.embed(enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device))[0]

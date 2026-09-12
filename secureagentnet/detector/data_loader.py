@@ -35,6 +35,8 @@ from typing import Callable
 
 import pandas as pd
 
+from .text_normalize import has_chat_template, strip_chat_template
+
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache"
@@ -509,6 +511,17 @@ def build_splits_from_csv(
 
     df = df.dropna(subset=["text", "label"])
     df["text"] = df["text"].astype(str)
+    # 770 rows here carry serialised Llama chat scaffolding, and 84% of
+    # them are benign against ~50% corpus-wide -- a label-correlated cue
+    # that is trivially exploitable. See text_normalize for the measured
+    # effect (7/8 -> 3/8 on the canonical attacks when wrapped).
+    n_tmpl = int(df["text"].map(has_chat_template).sum())
+    if n_tmpl:
+        logger.warning(
+            "chat-template markup: stripped from %d rows (%.2f%%) before splitting",
+            n_tmpl, 100 * n_tmpl / len(df))
+        df["text"] = df["text"].map(strip_chat_template)
+        df = df[df["text"].str.strip().astype(bool)]
     df["label"] = df["label"].astype(int)
     df["category"] = df["attack_type"].fillna("unknown")
     df["source"] = df["source_dataset"].map(CSV_SOURCE_MAP).fillna(df["source_dataset"])
