@@ -484,6 +484,10 @@ CSV_SOURCE_MAP = {
     # the escalation across turns, so per-turn rows destroy the signal.
     "hf_csv8": "safemtdata_crescendo",
     "hf_csv9": "gibbs_multiturn",
+    # Qualifire rows promoted to a TRAINING source by
+    # scripts/build_indomain_split.py. Only present in the in-domain
+    # corpus; results from it are in-domain, not cross-source.
+    "hf_csv10": "qualifire_indomain_train",
 }
 # Only hf_csv2 (qualifire) is the held-out benchmark; everything else is
 # pooled into train/val regardless of the CSV's own train/validation split
