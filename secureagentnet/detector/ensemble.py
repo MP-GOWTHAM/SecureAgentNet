@@ -68,6 +68,13 @@ class EnsembleRiskModelConfig:
     n_heads: int = 4
     dim_feedforward: int = 512
     dropout: float = 0.1
+    # Architecture of branch 1 over the byte view.
+    #   "multiwidth" -- parallel k=3/5/7 convs, max-over-time (the original)
+    #   "dpcnn"      -- deep pyramid: residual blocks with stride-2 pooling
+    # The default keeps checkpoints written before this field existed
+    # loading unchanged, since the dataclass fills it in.
+    char_branch: str = "multiwidth"
+    dpcnn_blocks: int = 5
     pad_token_id: int = 0
     # Path to the tokenizer directory. Named `model_name` so existing call
     # sites -- `load_tokenizer(model.config.model_name)` -- keep working.
@@ -126,9 +133,69 @@ class _CharCNNBranch(nn.Module):
             f = f.masked_fill(char_mask.unsqueeze(1) == 0, neg_inf)
             pooled.append(f.max(dim=2).values)
         h = torch.cat(pooled, dim=1)
-        # A row that is entirely padding produces -inf from the masked max;
-        # clamp it back to zero so it cannot poison the batch with NaNs.
-        h = torch.nan_to_num(h, neginf=0.0)
+        # A row that is entirely padding pools to finfo.min, and nan_to_num
+        # does NOT catch that -- finfo.min is finite, so the old guard here
+        # was inert and the projection overflowed to NaN. Zero those rows
+        # explicitly instead. Rows with any valid position are untouched.
+        any_valid = (char_mask != 0).any(dim=1, keepdim=True)
+        h = torch.where(any_valid, h, torch.zeros_like(h))
+        return self.proj(self.dropout(h))
+
+
+class _DPCNNCharBranch(nn.Module):
+    """Branch 1, alternative: a deep pyramid CNN over the same byte view.
+
+    The multi-width branch sees at most 7 bytes at once and then pools over
+    time, which makes it a learned character n-gram detector -- order-blind
+    beyond the filter width. Measured, that shows up as a +0.225 dilution
+    gap and 0.783 recall on semantic jailbreaks, its two worst numbers.
+
+    This keeps the byte input -- that is what carries homoglyph and
+    zero-width evidence -- but grows the receptive field geometrically
+    instead: each block halves the sequence, so `dpcnn_blocks` stride-2
+    stages over 1024 bytes reach whole-sequence context. Compute halves
+    with the length, so the depth is close to free.
+    """
+
+    def __init__(self, cfg: EnsembleRiskModelConfig):
+        super().__init__()
+        f = cfg.char_filters
+        self.emb = nn.Embedding(CHAR_VOCAB_SIZE, cfg.d_char, padding_idx=PAD_BYTE_ID)
+        # Region embedding: one conv to get from d_char into filter space.
+        self.region = nn.Conv1d(cfg.d_char, f, kernel_size=3, padding=1)
+        self.blocks = nn.ModuleList(
+            nn.Sequential(
+                nn.ReLU(),
+                nn.Conv1d(f, f, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.Conv1d(f, f, kernel_size=3, padding=1),
+            )
+            for _ in range(cfg.dpcnn_blocks)
+        )
+        self.proj = nn.Linear(f, BRANCH_DIM)
+        self.dropout = nn.Dropout(cfg.dropout)
+
+    def forward(self, char_ids: torch.Tensor, char_mask: torch.Tensor) -> torch.Tensor:
+        x = self.emb(char_ids).transpose(1, 2)          # (B, d_char, C)
+        m = char_mask.unsqueeze(1).to(x.dtype)          # (B, 1, C)
+        x = self.region(x * m)
+
+        for i, block in enumerate(self.blocks):
+            if i > 0:
+                # Downsample first, so block 0 runs at full resolution.
+                x = nn.functional.max_pool1d(x, kernel_size=3, stride=2, padding=1)
+                # The mask has to follow the pooling or padded positions
+                # start counting as real ones further up the pyramid.
+                m = nn.functional.max_pool1d(m, kernel_size=3, stride=2, padding=1)
+            x = x + block(x)                            # pre-activation residual
+
+        x = x.masked_fill(m == 0, torch.finfo(x.dtype).min)
+        h = x.max(dim=2).values
+        # Same guard as the other branch, and for the same reason: an
+        # all-padding row pools to finfo.min, which is finite, so it has to
+        # be zeroed explicitly rather than left to nan_to_num.
+        any_valid = (char_mask != 0).any(dim=1, keepdim=True)
+        h = torch.where(any_valid, h, torch.zeros_like(h))
         return self.proj(self.dropout(h))
 
 
@@ -220,7 +287,17 @@ class EnsembleInjectionRiskModel(nn.Module):
         self.register_buffer("token_lens", torch.zeros(config.vocab_size, dtype=torch.int16))
         self.register_buffer("punct_bytes", torch.tensor(_PUNCT_BYTES, dtype=torch.int16))
 
-        self.char_branch = _CharCNNBranch(config)
+        # Only branch 1 is swappable; branches 2 and 3 are fixed, so an
+        # A/B on the CNN changes one thing at a time.
+        if config.char_branch == "dpcnn":
+            self.char_branch = _DPCNNCharBranch(config)
+        elif config.char_branch == "multiwidth":
+            self.char_branch = _CharCNNBranch(config)
+        else:
+            raise ValueError(
+                f"unknown char_branch {config.char_branch!r}; "
+                "expected 'multiwidth' or 'dpcnn'"
+            )
         self.lstm_branch = _BiLSTMBranch(config)
         self.tf_branch = _TransformerBranch(config)
 

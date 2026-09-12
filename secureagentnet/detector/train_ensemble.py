@@ -145,6 +145,7 @@ def train(
     vocab_size: int = DEFAULT_VOCAB_SIZE,
     max_length: int = 256,
     char_max_length: int = 1024,
+    char_branch: str = "multiwidth",
     necent_max_rows: int = 30_000,
     meta_fraction: float = 0.5,
     limit_train: int | None = None,
@@ -220,6 +221,7 @@ def train(
         vocab_size=len(tokenizer),
         max_length=max_length,
         char_max_length=char_max_length,
+        char_branch=char_branch,
         pad_token_id=tokenizer.pad_token_id or 0,
         model_name=str(output_dir),
     )
@@ -330,6 +332,10 @@ def main() -> None:
     p.add_argument("--vocab-size", type=int, default=DEFAULT_VOCAB_SIZE)
     p.add_argument("--max-length", type=int, default=256)
     p.add_argument("--char-max-length", type=int, default=1024)
+    p.add_argument("--char-branch", choices=("multiwidth", "dpcnn"), default="multiwidth",
+                   help="architecture of branch 1 over the byte view; dpcnn trades the "
+                        "k=3/5/7 max-over-time convs for a residual pyramid with a "
+                        "whole-sequence receptive field")
     p.add_argument("--necent-max-rows", type=int, default=30_000)
     p.add_argument("--meta-fraction", type=float, default=0.5,
                    help="fraction of val used to fit the stacking head; the rest calibrates")
@@ -356,7 +362,8 @@ def main() -> None:
     train(
         csv_path=a.csv, output_dir=a.output_dir, epochs=a.epochs, batch_size=a.batch_size,
         lr=a.lr, vocab_size=a.vocab_size, max_length=a.max_length,
-        char_max_length=a.char_max_length, necent_max_rows=a.necent_max_rows,
+        char_max_length=a.char_max_length, char_branch=a.char_branch,
+        necent_max_rows=a.necent_max_rows,
         meta_fraction=a.meta_fraction, limit_train=a.limit_train, seed=a.seed,
         augment=a.augment, n_long_benign=a.n_long_benign, n_diluted_attacks=a.n_diluted_attacks,
         oversample_long=a.oversample_long, long_benign_fraction=a.long_benign_fraction,
