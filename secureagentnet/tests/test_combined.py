@@ -277,6 +277,75 @@ def test_members_load_on_cpu_when_cuda_is_absent(members, tmp_path, monkeypatch)
     assert seen == ["cpu", "cpu"]
 
 
+# --------------------------------------------- sklearn (text-in) members
+
+
+def _sklearn_member(directory):
+    """A tiny TF-IDF + logistic-regression pipeline saved as model.joblib,
+    which is how CombinedRiskModel recognises a text-in member."""
+    import joblib
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+
+    pipe = make_pipeline(TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 3)),
+                         LogisticRegression(max_iter=200))
+    pipe.fit(CORPUS, [1, 0, 1, 0] * 15)
+    directory.mkdir(parents=True, exist_ok=True)
+    joblib.dump(pipe, directory / "model.joblib")
+    return directory
+
+
+def test_sklearn_member_participates_in_scoring(members, tmp_path):
+    """The third member of the deployed configuration is a sparse n-gram
+    model, not a network. It slots into score_from_texts because that path
+    already works on text."""
+    sk = _sklearn_member(tmp_path / "tfidf_member")
+    m = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(sk)], mode="mean", max_length=48))
+    assert len(m.members) == 1 and len(m.sklearn_members) == 1
+
+    scores = m.score_from_texts(TEXTS)
+    assert scores.shape == (len(TEXTS),)
+    assert torch.isfinite(scores).all()
+    assert ((scores >= 0) & (scores <= 1)).all()
+
+
+def test_sklearn_member_actually_changes_the_result(members, tmp_path):
+    """Guards against the pipeline being loaded but silently dropped from
+    the stack -- the scores would still look valid."""
+    sk = _sklearn_member(tmp_path / "tfidf_member2")
+    alone = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"])], mode="mean", max_length=48))
+    withsk = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(sk)], mode="mean", max_length=48))
+    assert not torch.allclose(alone.score_from_texts(TEXTS),
+                              withsk.score_from_texts(TEXTS))
+
+
+def test_member_order_is_preserved_across_kinds(members, tmp_path):
+    """gated_max trusts members[0]; if the two containers were concatenated
+    instead of interleaved by configured order, the primary would change."""
+    sk = _sklearn_member(tmp_path / "tfidf_member3")
+    m = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"]), str(sk), str(members["dir_b"])],
+        mode="gated_max", gate=1.01, max_length=48))
+    assert m._order == [("torch", 0), ("sklearn", 0), ("torch", 1)]
+    # An unreachable gate degenerates to the primary alone.
+    primary = CombinedRiskModel(CombinedRiskModelConfig(
+        members=[str(members["dir_a"])], mode="max", max_length=48))
+    assert torch.allclose(m.score_from_texts(TEXTS),
+                          primary.score_from_texts(TEXTS), atol=1e-6)
+
+
+def test_sklearn_member_cannot_be_the_primary(members, tmp_path):
+    """embed() and the device lookup both read members[0]."""
+    sk = _sklearn_member(tmp_path / "tfidf_member4")
+    with pytest.raises(ValueError, match="must be a torch model"):
+        CombinedRiskModel(CombinedRiskModelConfig(
+            members=[str(sk), str(members["dir_a"])], mode="mean", max_length=48))
+
+
 def test_plain_load_defaults_to_cpu_when_cuda_is_absent(members, monkeypatch):
     """Same default at the shared entry point, so a direct member load
     gets it too rather than only the combined path."""

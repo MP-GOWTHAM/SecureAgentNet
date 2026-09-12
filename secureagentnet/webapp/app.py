@@ -54,21 +54,32 @@ from secureagentnet.provenance.tracker import ProvenanceTracker
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("webapp")
 
-MODEL_DIR = os.environ.get(
-    "SECUREAGENTNET_MODEL_DIR",
-    # combined_gated_v7: max(ensemble_v6_smooth3, v3) with the secondary
-    # gated at 0.95. Catches 8/8 canonical short attacks and 8/8 real
-    # evasions -- the coverage plain max gives -- at FPR 0.368 rather than
-    # 0.415 and utility 0.654 rather than 0.621.
-    #
-    # Falls back to v3 if that config is absent, so a checkout without the
-    # downloaded checkpoints still starts against whatever is present.
-    str(REPO_ROOT / "secureagentnet" / "data" / "models" / "combined_gated_v7"),
-)
-if not (Path(MODEL_DIR) / "config.json").exists():
-    _fallback = REPO_ROOT / "secureagentnet" / "data" / "models" / "v3"
-    if (_fallback / "config.json").exists():
-        MODEL_DIR = str(_fallback)
+_MODELS = REPO_ROOT / "secureagentnet" / "data" / "models"
+
+# combined_mean_v13: mean(ensemble_v12_mt, v3, tfidf_char_v1).
+#
+# Keeps full coverage -- 8/8 canonical short attacks, 0/4 benign controls,
+# 8/8 real evasions -- and holds the benchmark where combined_gated_v7 had
+# it (AUC 0.817, FPR 0.388, FNR 0.115) while fixing two things that config
+# could not:
+#
+#   multi-turn conversations   AUC 0.699 -> 0.809, FPR 0.495 -> 0.155
+#   crescendo attacks          recall 0.179 -> 0.916 at the member level
+#
+# The third member is a TF-IDF char n-gram model rather than a network; it
+# is the single strongest detector on this benchmark and costs 0.7 ms.
+#
+# Each fallback below is a strict subset of the one above, so a checkout
+# with only some checkpoints downloaded still starts.
+_MODEL_CANDIDATES = ("combined_mean_v13", "combined_gated_v7", "v3")
+
+MODEL_DIR = os.environ.get("SECUREAGENTNET_MODEL_DIR")
+if not MODEL_DIR:
+    MODEL_DIR = str(_MODELS / _MODEL_CANDIDATES[0])
+    for _name in _MODEL_CANDIDATES:
+        if (_MODELS / _name / "config.json").exists():
+            MODEL_DIR = str(_MODELS / _name)
+            break
 HARM_MODEL_DIR = Path(os.environ.get(
     "SECUREAGENTNET_HARM_MODEL_DIR",
     # v3 is the two-source classifier: wider margin (harmful mean 0.769 vs

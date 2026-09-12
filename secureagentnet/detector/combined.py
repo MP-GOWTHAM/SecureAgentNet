@@ -107,10 +107,35 @@ class CombinedRiskModel(nn.Module):
 
         self.members = nn.ModuleList()
         self.tokenizers = []
-        for name in config.members:
+        self.sklearn_members: list = []
+        # Position of each configured member within its own container, so
+        # scoring can rebuild the original order. gated_max depends on that
+        # order -- members[0] is the trusted primary.
+        self._order: list[tuple[str, int]] = []
+
+        for i, name in enumerate(config.members):
             d = Path(name) if Path(name).is_absolute() else MODELS_DIR / name
+            joblib_path = d / "model.joblib"
+            if joblib_path.exists():
+                # A text-in sklearn pipeline (e.g. TF-IDF + logistic
+                # regression). It slots in here rather than fighting the
+                # design because score_from_texts already works on text --
+                # risk_score decodes the primary tokenisation back first.
+                if i == 0:
+                    raise ValueError(
+                        f"member 0 ({name}) is an sklearn pipeline, but the primary "
+                        "must be a torch model: embed() and the device lookup both "
+                        "read from it."
+                    )
+                import joblib
+
+                self._order.append(("sklearn", len(self.sklearn_members)))
+                self.sklearn_members.append(joblib.load(joblib_path))
+                continue
+
             m = InjectionRiskModel.load(str(d), map_location=map_location)
             m.eval()
+            self._order.append(("torch", len(self.members)))
             self.members.append(m)
             self.tokenizers.append(load_tokenizer(m.config.model_name))
 
@@ -129,7 +154,8 @@ class CombinedRiskModel(nn.Module):
     @torch.no_grad()
     def score_from_texts(self, texts: list[str], batch_size: int = 32) -> torch.Tensor:
         device = self._device
-        per_member = []
+        by_kind: dict[str, list] = {"torch": [], "sklearn": []}
+
         for member, tok in zip(self.members, self.tokenizers):
             out = []
             for i in range(0, len(texts), batch_size):
@@ -137,8 +163,15 @@ class CombinedRiskModel(nn.Module):
                           max_length=member.config.max_length, return_tensors="pt")
                 out.append(member.risk_score(enc["input_ids"].to(device),
                                              enc["attention_mask"].to(device)).float())
-            per_member.append(torch.cat(out) if out else torch.empty(0, device=device))
-        stacked = torch.stack(per_member)
+            by_kind["torch"].append(torch.cat(out) if out else torch.empty(0, device=device))
+
+        for pipe in self.sklearn_members:
+            probs = pipe.predict_proba(list(texts))[:, 1]
+            by_kind["sklearn"].append(
+                torch.as_tensor(probs, dtype=torch.float32, device=device))
+
+        # Rebuild the configured order: gated_max trusts members[0].
+        stacked = torch.stack([by_kind[kind][idx] for kind, idx in self._order])
 
         if self.config.mode == "mean":
             return stacked.mean(dim=0)

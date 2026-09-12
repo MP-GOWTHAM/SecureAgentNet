@@ -103,28 +103,46 @@ if (-not $SkipModels) {
     }
 }
 
-# --- 4. combined_gated_v7 config --------------------------------------
-Step 4 "combined_gated_v7 configuration"
-$members = @("ensemble_v6_smooth3", "v3")
-$haveAll = $true
-foreach ($m in $members) {
-    if (-not (Test-Path (Join-Path $ModelsDir "$m\config.json"))) { $haveAll = $false }
+# --- 4. combined configuration ----------------------------------------
+# combined_mean_v13 is the default the web app looks for first. Its third
+# member is an sklearn pipeline (model.joblib) rather than a checkpoint
+# directory, so it is checked the same way but loads differently.
+Step 4 "combined_mean_v13 configuration"
+$v13members = @("ensemble_v12_mt\config.json", "v3\config.json", "tfidf_char_v1\model.joblib")
+$haveV13 = $true
+foreach ($m in $v13members) {
+    if (-not (Test-Path (Join-Path $ModelsDir $m))) { $haveV13 = $false }
 }
-if ($haveAll) {
-    $CombinedDir = Join-Path $ModelsDir "combined_gated_v7"
-    $mk = "from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig; CombinedRiskModel(CombinedRiskModelConfig(members=['ensemble_v6_smooth3','v3'], mode='gated_max', gate=0.95)).save(r'$CombinedDir'); print('  combined_gated_v7 written (gate 0.95, references both members)')"
+if ($haveV13) {
+    $CombinedDir = Join-Path $ModelsDir "combined_mean_v13"
+    $mk = "from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig; CombinedRiskModel(CombinedRiskModelConfig(members=['ensemble_v12_mt','v3','tfidf_char_v1'], mode='mean')).save(r'$CombinedDir'); print('  combined_mean_v13 written (mean of three members)')"
     & $VenvPython -c $mk
 } else {
-    Write-Host "  members not present yet - skipped" -ForegroundColor Yellow
+    Write-Host "  combined_mean_v13 members not all present - trying combined_gated_v7" -ForegroundColor Yellow
+    $members = @("ensemble_v6_smooth3", "v3")
+    $haveAll = $true
+    foreach ($m in $members) {
+        if (-not (Test-Path (Join-Path $ModelsDir "$m\config.json"))) { $haveAll = $false }
+    }
+    if ($haveAll) {
+        $CombinedDir = Join-Path $ModelsDir "combined_gated_v7"
+        $mk = "from secureagentnet.detector.combined import CombinedRiskModel, CombinedRiskModelConfig; CombinedRiskModel(CombinedRiskModelConfig(members=['ensemble_v6_smooth3','v3'], mode='gated_max', gate=0.95)).save(r'$CombinedDir'); print('  combined_gated_v7 written (gate 0.95, references both members)')"
+        & $VenvPython -c $mk
+    } else {
+        Write-Host "  members not present yet - skipped" -ForegroundColor Yellow
+    }
 }
 
 # --- 5. verify --------------------------------------------------------
 Step 5 "Verifying"
 & $VenvPython -m pytest (Join-Path $RepoRoot "secureagentnet\tests") -q
 Write-Host ""
-if (Test-Path (Join-Path $ModelsDir "combined_gated_v7\config.json")) {
-    Write-Host "Ready. Start the app with:" -ForegroundColor Green
-    Write-Host ('  $env:SECUREAGENTNET_MODEL_DIR="' + (Join-Path $ModelsDir "combined_gated_v7") + '"')
+$installed = $null
+foreach ($c in @("combined_mean_v13", "combined_gated_v7", "v3")) {
+    if (Test-Path (Join-Path $ModelsDir "$c\config.json")) { $installed = $c; break }
+}
+if ($installed) {
+    Write-Host "Ready. The app picks $installed automatically; start it with:" -ForegroundColor Green
     Write-Host "  .\.venv\Scripts\python.exe -m secureagentnet.webapp.app"
     Write-Host "  then open http://127.0.0.1:5050"
 } else {
