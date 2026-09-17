@@ -75,6 +75,25 @@ class EnsembleRiskModelConfig:
     # loading unchanged, since the dataclass fills it in.
     char_branch: str = "multiwidth"
     dpcnn_blocks: int = 5
+    # Stacking head.
+    #   "linear" -- one fixed weight per branch, the same for every input
+    #   "gated"  -- a small gating network picks per-input branch weights
+    # Default keeps existing checkpoints loading, since their state_dict
+    # holds a plain Linear(6, 1) under `meta`.
+    meta_kind: str = "linear"
+    gate_hidden: int = 16
+    # Feed the 768-d pooled representation to the gate as well. Off by
+    # default: Stage B fits the head on half of validation, which can be a
+    # few hundred rows, and a 768-input gate overfits that badly.
+    gate_uses_pooled: bool = False
+    # Blend toward uniform: w = (1 - mix)/3 + mix * softmax(gate). With
+    # identical branches and fitting data, pure gating (mix 1.0) lost AUC
+    # in both protocols -- 0.8132 -> 0.8004 cross-source, 0.9401 -> 0.9185
+    # in-domain -- because it routes almost one-hot (per-prompt std 0.42)
+    # and gives up the variance reduction averaging buys when branches
+    # correlate 0.84-0.86. 0.25 lets the gate tilt but not switch a branch
+    # off, and was the only setting within noise of the linear head.
+    gate_mix: float = 0.25
     pad_token_id: int = 0
     # Path to the tokenizer directory. Named `model_name` so existing call
     # sites -- `load_tokenizer(model.config.model_name)` -- keep working.
@@ -199,6 +218,62 @@ class _DPCNNCharBranch(nn.Module):
         return self.proj(self.dropout(h))
 
 
+class _GatedMeta(nn.Module):
+    """Input-dependent stacking head: a mixture of the three branches.
+
+    The linear head gives each branch one weight for every prompt. Measured,
+    the branches do specialise, just not globally: BiLSTM wins every semantic
+    family, the transformer wins word-substitution attacks, char-CNN wins
+    character corruption. A single weight has to average over all of that.
+
+    Here a small gating network reads the prompt's own evidence -- the three
+    branch logits and the three surface features, optionally the pooled
+    representation -- and emits a softmax over the branches, so a prompt
+    heavy in non-ASCII characters can lean on the char branch while a long
+    roleplay prompt leans on another:
+
+        w(x)   = softmax(gate([logits, feats]) / tau)       per prompt
+        fused  = scale * sum_i w_i(x) * logit_i  +  feat_proj(feats) + bias
+
+    The gate's last layer is zero-initialised, so before Stage B fits it the
+    weights are uniform and the head reduces to the mean of the branches --
+    the same starting point as the linear head.
+    """
+
+    def __init__(self, cfg: "EnsembleRiskModelConfig"):
+        super().__init__()
+        in_dim = 6 + (EMBED_DIM if cfg.gate_uses_pooled else 0)
+        self.uses_pooled = cfg.gate_uses_pooled
+        self.mix = cfg.gate_mix
+        self.norm = nn.LayerNorm(in_dim)
+        self.hidden = nn.Linear(in_dim, cfg.gate_hidden)
+        self.out = nn.Linear(cfg.gate_hidden, 3)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+        # log(1) = 0: a softmax temperature of 1 to start.
+        self.log_tau = nn.Parameter(torch.zeros(1))
+        self.scale = nn.Parameter(torch.ones(1))
+        self.feat_proj = nn.Linear(3, 1)
+        nn.init.zeros_(self.feat_proj.weight)
+        nn.init.zeros_(self.feat_proj.bias)
+
+    def weights(self, logits, feats, pooled=None) -> torch.Tensor:
+        """Per-prompt branch weights, shape (B, 3), rows sum to 1."""
+        parts = [logits, feats]
+        if self.uses_pooled:
+            # Detached: the gate chooses between branches, it must not push
+            # gradients back into representations it is judging.
+            parts.append(pooled.detach())
+        z = self.out(torch.nn.functional.gelu(self.hidden(self.norm(torch.cat(parts, 1)))))
+        w = torch.softmax(z / self.log_tau.exp(), dim=1)
+        return (1 - self.mix) / 3 + self.mix * w
+
+    def forward(self, logits, feats, pooled=None) -> torch.Tensor:
+        w = self.weights(logits, feats, pooled)
+        mixed = (w * logits).sum(dim=1, keepdim=True)
+        return self.scale * mixed + self.feat_proj(feats)
+
+
 class _BiLSTMBranch(nn.Module):
     """Branch 2: BiLSTM with attention pooling.
 
@@ -309,12 +384,18 @@ class EnsembleInjectionRiskModel(nn.Module):
         # Stacking head over [logit1, logit2, logit3] + 3 handcrafted
         # features. Kept deliberately small -- a large meta-learner over
         # six inputs would overfit the fitting split.
-        self.meta = nn.Linear(6, 1)
-        nn.init.zeros_(self.meta.bias)
-        with torch.no_grad():
-            # Initialise as a plain mean of the branch logits so the model
-            # is sensible before the meta head is fitted.
-            self.meta.weight.copy_(torch.tensor([[1 / 3, 1 / 3, 1 / 3, 0.0, 0.0, 0.0]]))
+        if config.meta_kind == "gated":
+            self.meta = _GatedMeta(config)
+        elif config.meta_kind == "linear":
+            self.meta = nn.Linear(6, 1)
+            nn.init.zeros_(self.meta.bias)
+            with torch.no_grad():
+                # Initialise as a plain mean of the branch logits so the model
+                # is sensible before the meta head is fitted.
+                self.meta.weight.copy_(torch.tensor([[1 / 3, 1 / 3, 1 / 3, 0.0, 0.0, 0.0]]))
+        else:
+            raise ValueError(f"unknown meta_kind {config.meta_kind!r}; "
+                             "expected 'linear' or 'gated'")
 
         # Temperature scaling, fitted on validation after training. T=1 is
         # a no-op, so training runs uncalibrated and inference is calibrated.
@@ -395,9 +476,29 @@ class EnsembleInjectionRiskModel(nn.Module):
         """Fused logits, shape (batch,). Temperature is applied here, so it
         is a no-op during training (T=1) and calibrated at inference once
         `fit_temperature` has run."""
-        logits, _, feats = self.branch_logits(input_ids, attention_mask)
-        fused = self.meta(torch.cat([logits, feats], dim=1)).squeeze(-1)
-        return fused / self.log_temperature.exp()
+        logits, pooled, feats = self.branch_logits(input_ids, attention_mask)
+        return self.fuse(logits, feats, pooled) / self.log_temperature.exp()
+
+    def fuse(self, logits: torch.Tensor, feats: torch.Tensor,
+             pooled: torch.Tensor | None = None) -> torch.Tensor:
+        """Stacking head, uncalibrated, shape (batch,). One call site for
+        both head kinds so Stage B, Stage C and inference cannot drift."""
+        if isinstance(self.meta, _GatedMeta):
+            return self.meta(logits, feats, pooled).squeeze(-1)
+        return self.meta(torch.cat([logits, feats], dim=1)).squeeze(-1)
+
+    @torch.no_grad()
+    def branch_weights(self, input_ids: torch.Tensor,
+                       attention_mask: torch.Tensor) -> torch.Tensor:
+        """How much each branch counted for each prompt, shape (B, 3):
+        [char, bilstm, transformer]. A linear head gives the same row for
+        every prompt; a gated head gives a different one per prompt."""
+        self.eval()
+        logits, pooled, feats = self.branch_logits(input_ids, attention_mask)
+        if isinstance(self.meta, _GatedMeta):
+            return self.meta.weights(logits, feats, pooled)
+        w = self.meta.weight[0, :3].abs()
+        return (w / w.sum()).expand(logits.shape[0], 3)
 
     @torch.no_grad()
     def risk_score(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:

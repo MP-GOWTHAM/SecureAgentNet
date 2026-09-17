@@ -47,6 +47,7 @@ by the exit code.** Running under `python -X faulthandler` happens to exit
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 from pathlib import Path
@@ -70,7 +71,7 @@ from .custom_tokenizer import (
     token_byte_table,
     train_byte_level_bpe,
 )
-from .ensemble import EnsembleInjectionRiskModel, EnsembleRiskModelConfig
+from .ensemble import EnsembleInjectionRiskModel, EnsembleRiskModelConfig, _GatedMeta
 from .train import InjectionTextDataset, evaluate, make_collate_fn, pick_device
 
 logger = logging.getLogger(__name__)
@@ -80,34 +81,55 @@ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "models" 
 
 @torch.no_grad()
 def collect_branch_outputs(model, loader, device):
-    """Run the branches over a loader and return (logits, feats, labels)."""
+    """Run the branches over a loader: (logits, feats, labels, pooled)."""
     model.eval()
-    L, F, Y = [], [], []
+    L, F, Y, P = [], [], [], []
     for batch in loader:
-        logits, _, feats = model.branch_logits(
+        logits, pooled, feats = model.branch_logits(
             batch["input_ids"].to(device), batch["attention_mask"].to(device)
         )
         L.append(logits.float().cpu())
         F.append(feats.float().cpu())
+        P.append(pooled.float().cpu())
         Y.append(batch["labels"].float().cpu())
-    return torch.cat(L), torch.cat(F), torch.cat(Y)
+    return torch.cat(L), torch.cat(F), torch.cat(Y), torch.cat(P)
 
 
-def fit_meta(model, logits, feats, labels, steps: int = 400, lr: float = 0.05) -> None:
-    """Stage B: fit the 6-input stacking head. Plain BCE, no class weighting
-    -- the head's job is to combine, and re-weighting here would bias the
-    probabilities the temperature stage then tries to calibrate."""
-    x = torch.cat([logits, feats], dim=1)
-    head = nn.Linear(6, 1)
-    head.load_state_dict(model.meta.state_dict())
-    opt = torch.optim.Adam(head.parameters(), lr=lr)
+def fit_meta(model, logits, feats, labels, pooled=None, steps: int = 400,
+             lr: float = 0.05) -> None:
+    """Stage B: fit the stacking head. Plain BCE, no class weighting -- the
+    head's job is to combine, and re-weighting here would bias the
+    probabilities the temperature stage then tries to calibrate.
+
+    The gated head has far more freedom than six weights, and this split is
+    small (half of validation), so it trains with weight decay and fewer,
+    gentler steps."""
+    gated = isinstance(model.meta, _GatedMeta)
+    head = copy.deepcopy(model.meta).cpu()
+    if gated:
+        opt = torch.optim.AdamW(head.parameters(), lr=0.01, weight_decay=0.05)
+        steps = 300
+    else:
+        opt = torch.optim.Adam(head.parameters(), lr=lr)
     loss_fn = nn.BCEWithLogitsLoss()
+    x = torch.cat([logits, feats], dim=1)
     for _ in range(steps):
         opt.zero_grad()
-        loss = loss_fn(head(x).squeeze(-1), labels)
+        out = head(logits, feats, pooled) if gated else head(x)
+        loss = loss_fn(out.squeeze(-1), labels)
         loss.backward()
         opt.step()
     model.meta.load_state_dict(head.state_dict())
+
+    if gated:
+        with torch.no_grad():
+            w = head.weights(logits, feats, pooled)
+        logger.info(
+            "Stage B (gated): mean branch weights char=%.3f lstm=%.3f tf=%.3f, "
+            "per-prompt spread (std) %.3f/%.3f/%.3f, loss=%.4f",
+            *w.mean(0).tolist(), *w.std(0).tolist(), loss.item(),
+        )
+        return
     w = head.weight.detach().squeeze(0)
     logger.info(
         "Stage B: meta weights char=%.3f lstm=%.3f tf=%.3f | non_ascii=%.3f punct=%.3f len=%.3f (bias %.3f), loss=%.4f",
@@ -115,14 +137,15 @@ def fit_meta(model, logits, feats, labels, steps: int = 400, lr: float = 0.05) -
     )
 
 
-def fit_temperature(model, logits, feats, labels, steps: int = 300, lr: float = 0.02) -> None:
+def fit_temperature(model, logits, feats, labels, pooled=None, steps: int = 300,
+                    lr: float = 0.02) -> None:
     """Stage C: single-parameter temperature scaling.
 
     Attacks the calibration half of the DistilBERT model's precision
     problem: its scores rank well (recall 0.91) but the 0.5 cut is
     arbitrary because nothing ever calibrated them."""
     with torch.no_grad():
-        fused = model.meta(torch.cat([logits, feats], dim=1)).squeeze(-1)
+        fused = model.fuse(logits, feats, pooled)
     log_t = torch.zeros(1, requires_grad=True)
     opt = torch.optim.Adam([log_t], lr=lr)
     loss_fn = nn.BCEWithLogitsLoss()
@@ -146,6 +169,8 @@ def train(
     max_length: int = 256,
     char_max_length: int = 1024,
     char_branch: str = "multiwidth",
+    meta_kind: str = "linear",
+    gate_uses_pooled: bool = False,
     necent_max_rows: int = 30_000,
     meta_fraction: float = 0.5,
     limit_train: int | None = None,
@@ -222,6 +247,8 @@ def train(
         max_length=max_length,
         char_max_length=char_max_length,
         char_branch=char_branch,
+        meta_kind=meta_kind,
+        gate_uses_pooled=gate_uses_pooled,
         pad_token_id=tokenizer.pad_token_id or 0,
         model_name=str(output_dir),
     )
@@ -299,10 +326,10 @@ def train(
     meta_df, calib_df = val_shuffled.iloc[:n_meta], val_shuffled.iloc[n_meta:]
     logger.info("Stage B/C split: meta=%d calibration=%d", len(meta_df), len(calib_df))
 
-    ml, mf, my = collect_branch_outputs(model.cpu(), mk(meta_df, False), torch.device("cpu"))
-    fit_meta(model, ml, mf, my)
-    cl, cf, cy = collect_branch_outputs(model, mk(calib_df, False), torch.device("cpu"))
-    fit_temperature(model, cl, cf, cy)
+    ml, mf, my, mp = collect_branch_outputs(model.cpu(), mk(meta_df, False), torch.device("cpu"))
+    fit_meta(model, ml, mf, my, mp)
+    cl, cf, cy, cp = collect_branch_outputs(model, mk(calib_df, False), torch.device("cpu"))
+    fit_temperature(model, cl, cf, cy, cp)
     model.to(device)
 
     # ---------------- final evaluation on the untouched holdout -----------
@@ -336,6 +363,12 @@ def main() -> None:
                    help="architecture of branch 1 over the byte view; dpcnn trades the "
                         "k=3/5/7 max-over-time convs for a residual pyramid with a "
                         "whole-sequence receptive field")
+    p.add_argument("--meta-kind", choices=("linear", "gated"), default="linear",
+                   help="stacking head: one fixed weight per branch, or a gating "
+                        "network that picks branch weights per prompt")
+    p.add_argument("--gate-uses-pooled", action="store_true",
+                   help="also feed the 768-d representation to the gate; overfits "
+                        "small Stage B splits")
     p.add_argument("--necent-max-rows", type=int, default=30_000)
     p.add_argument("--meta-fraction", type=float, default=0.5,
                    help="fraction of val used to fit the stacking head; the rest calibrates")
@@ -363,6 +396,7 @@ def main() -> None:
         csv_path=a.csv, output_dir=a.output_dir, epochs=a.epochs, batch_size=a.batch_size,
         lr=a.lr, vocab_size=a.vocab_size, max_length=a.max_length,
         char_max_length=a.char_max_length, char_branch=a.char_branch,
+        meta_kind=a.meta_kind, gate_uses_pooled=a.gate_uses_pooled,
         necent_max_rows=a.necent_max_rows,
         meta_fraction=a.meta_fraction, limit_train=a.limit_train, seed=a.seed,
         augment=a.augment, n_long_benign=a.n_long_benign, n_diluted_attacks=a.n_diluted_attacks,

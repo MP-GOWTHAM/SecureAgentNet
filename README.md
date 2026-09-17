@@ -323,6 +323,34 @@ The recommended runtime configuration therefore costs roughly **29 ms per
 request** (`combined_max_v7` 16.4 + `harm_detector_v3` 12.5), against 4.8 ms
 for DistilBERT alone. That is still negligible beside any LLM call, but it
 is a real 6× increase and worth stating rather than discovering later.
+
+### Stacking head: fixed or per-prompt weights
+
+The ensemble combines its three branches with a stacking head fitted in
+Stage B. Two kinds are available (`--meta-kind`):
+
+- `linear` (default) — one fixed weight per branch, the same for every prompt.
+- `gated` — a small gating network reads each prompt's branch logits and
+  surface features and chooses the branch weights *for that prompt*.
+  `branch_weights()` returns them, so you can see which branch a decision
+  leaned on.
+
+Measured with the branches frozen and both heads fitted on identical data,
+**the gated head did not beat the linear one**:
+
+| Head | Cross-source AUC | Multi-turn AUC | In-domain AUC |
+|---|---|---|---|
+| linear | **0.8132** | **0.9335** | **0.9401** |
+| gated, `gate_mix` 0.25 (default for `gated`) | 0.8104 | 0.9309 | 0.9381 |
+| gated, `gate_mix` 1.0 (pure routing) | 0.8004 | 0.9105 | 0.9185 |
+
+Pure routing switches almost one-hot per prompt (weight spread 0.42) and
+gives up the variance reduction that averaging buys. The branches
+correlate 0.84–0.86, so there is little to gain by choosing between them.
+`gate_mix` blends the gate toward uniform so no branch can drop below
+`(1 − mix)/3`; at 0.25 it lands within noise of the linear head, and more
+routing freedom made ranking worse monotonically. Dynamic weighting would
+pay off only with branches that disagree far more than these do.
 `overhead_pct_framework_vs_undefended` is reported but is astronomically
 large by construction (undefended is ~0.00004 ms) — quote the absolute
 millisecond figures, not that percentage.
