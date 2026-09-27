@@ -56,27 +56,47 @@ logger = logging.getLogger("webapp")
 
 _MODELS = REPO_ROOT / "secureagentnet" / "data" / "models"
 
-# combined_indomain_v14: mean(distilbert_id93, tfidf_id93), with the
-# validation-tuned operating point (0.601) folded into the score so the
+# combined_strat80fix_t050: mean(strat80fix_ensemble, strat80fix_distilbert,
+# strat80fix_tfidf), with operating point 0.50 folded into the score so the
 # standard 0.5 cut is correct and the fusion thresholds keep their meaning.
 #
-#   in-domain held-out, 1000 rows:  accuracy 0.9240, FPR 0.0768, FNR 0.0748,
-#                                   AUC 0.9807, 8/8 short, 8/8 evasions
+# Members were retrained on a deduplicated, label x source stratified 80%
+# of the 331k seven-source corpus (consolidated_v4), with imoxto relabelled:
+# it is HackAPrompt, whose label meant "attack succeeded", so failed attacks
+# were labelled benign. Every attempt is now an attack, each paired with a
+# harmless twin in the same level template so the template cannot be the cue.
 #
-# READ THIS BEFORE QUOTING THAT NUMBER. It is IN-DOMAIN: the members
-# trained on 80% of the qualifire benchmark, so this configuration has no
-# valid cross-source figure -- the cross-source holdout is its own
-# training data. It is the right choice when deployment traffic resembles
-# qualifire, and the wrong one if you need a generalisation guarantee.
+# The operating point sits between two measured cuts. The 7-source
+# validation cut (0.426) gave mostly false alarms on qualifire; a
+# qualifire-tuned cut (0.571, 2-fold cross-fitted) halved them but doubled
+# the misses. 0.50 balances the two -- on the unseen qualifire rows FPR and
+# FNR are nearly equal. Measured through this load path:
 #
-# combined_mean_v13 is the cross-source-validated alternative: accuracy
-# 0.7212 / AUC 0.8173 measured against a benchmark it never trained on.
-# That number is lower and means more. Set SECUREAGENTNET_MODEL_DIR to it
-# if generalisation matters more than in-domain accuracy.
+#                               0.426            0.50 (this)      0.571
+#   7-source test, 67,375:     acc 0.9879        acc 0.9869       acc 0.9832
+#                              FP 393  FN 424    FP 265  FN 616   FP 198  FN 932
+#   qualifire, 980 unseen:     acc 0.8643        acc 0.8704       acc 0.8765
+#                              FP 97   FN 36     FP 75   FN 52    FP 48   FN 73
+#   probes at 0.50:            8/8 short, 0/4 benign FP, 8/8 evasions
+#
+# Dropping TF-IDF was measured and rejected: better on qualifire, but only
+# 3/8 known evasions and 6/8 short attacks caught.
+#
+# READ THIS BEFORE QUOTING THOSE NUMBERS. The 7-source figure is
+# IN-DISTRIBUTION (test rows come from the same sources as training).
+# 4,020 of qualifire's 5,000 rows are in the training corpus (directly and
+# via Smooth-3 copies), so only the 980 unseen rows are an honest qualifire
+# number.
+#
+# combined_strat80fix_t057 (same members, cut 0.571, fewer false alarms,
+# more misses), combined_indomain_v14 (in-domain qualifire) and
+# combined_mean_v13 (cross-source-validated, accuracy 0.7212 on a benchmark
+# it never trained on) remain available via SECUREAGENTNET_MODEL_DIR.
 #
 # Each fallback below is usable on its own, so a checkout with only some
 # checkpoints downloaded still starts.
-_MODEL_CANDIDATES = ("combined_indomain_v14", "combined_mean_v13",
+_MODEL_CANDIDATES = ("combined_strat80fix_t050", "combined_strat80fix_t057",
+                     "combined_indomain_v14", "combined_mean_v13",
                      "combined_gated_v7", "v3")
 
 MODEL_DIR = os.environ.get("SECUREAGENTNET_MODEL_DIR")

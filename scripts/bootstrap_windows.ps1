@@ -1,4 +1,4 @@
-﻿<#
+<#
     SecureAgentNet - one-command Windows bootstrap.
 
     Takes a fresh `git clone` to a running web app. setup_windows.ps1 only
@@ -148,7 +148,8 @@ Step 5 "Verifying"
 & $VenvPython -m pytest (Join-Path $RepoRoot "secureagentnet\tests") -q
 Write-Host ""
 $installed = $null
-foreach ($c in @("combined_indomain_v14", "combined_mean_v13", "combined_gated_v7", "v3")) {
+# Same order as _MODEL_CANDIDATES in secureagentnet/webapp/app.py.
+foreach ($c in @("combined_strat80fix_t050", "combined_strat80fix_t057", "combined_indomain_v14", "combined_mean_v13", "combined_gated_v7", "v3")) {
     if (Test-Path (Join-Path $ModelsDir "$c\config.json")) { $installed = $c; break }
 }
 if ($installed) {
