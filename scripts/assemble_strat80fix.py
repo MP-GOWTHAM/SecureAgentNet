@@ -1,11 +1,21 @@
-"""Assemble combined_strat80fix_t057 and verify it through the real load path.
+"""Assemble a strat80fix combined checkpoint and verify it through the real load path.
 
+Default (the web-app default): combined_strat80fix_t057 =
 mean(strat80fix_ensemble, strat80fix_distilbert, strat80fix_tfidf) with the
 qualifire-tuned operating point 0.571 folded into the score, so the
 standard 0.5 cut downstream IS the new threshold.
 
+Dropping TF-IDF was measured and rejected:
+    assemble_strat80fix.py WORK combined_strat80fix_ens_dbert_t0577 0.577 \
+        strat80fix_ensemble strat80fix_distilbert
+It is better on qualifire (all 5000: FP 163 -> 117, FN 218 -> 155) but
+catches only 3/8 known evasions and 6/8 short attacks (8/8 and 8/8 with
+TF-IDF), and misses 2,098 attacks on the 7-source test against 932.
+
 Verified by loading with InjectionRiskModel.load (the web app's path) and
 scoring qualifire (all + unseen), the 7-source test, and the project probes.
+
+usage: assemble_strat80fix.py WORK [NAME THRESHOLD MEMBER...]
 """
 from __future__ import annotations
 
@@ -25,12 +35,11 @@ from probe_short_attacks import FILLER, SHORT_ATTACKS, SHORT_BENIGN
 
 SP = Path(sys.argv[1])
 MODELS = REPO / "secureagentnet" / "data" / "models"
-NAME = "combined_strat80fix_t057"
-THRESHOLD = 0.571
+NAME = sys.argv[2] if len(sys.argv) > 2 else "combined_strat80fix_t057"
+THRESHOLD = float(sys.argv[3]) if len(sys.argv) > 3 else 0.571
+MEMBERS = sys.argv[4:] or ["strat80fix_ensemble", "strat80fix_distilbert", "strat80fix_tfidf"]
 
-cfg = CombinedRiskModelConfig(
-    members=["strat80fix_ensemble", "strat80fix_distilbert", "strat80fix_tfidf"],
-    mode="mean", decision_threshold=THRESHOLD)
+cfg = CombinedRiskModelConfig(members=MEMBERS, mode="mean", decision_threshold=THRESHOLD)
 dev = pick_device()
 CombinedRiskModel(cfg, map_location=str(dev)).save(MODELS / NAME)
 print(f"saved {NAME}: {json.loads((MODELS / NAME / 'config.json').read_text())}")
