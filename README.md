@@ -734,16 +734,20 @@ numbers are much lower and mean considerably more.
 
 | Goal | `SECUREAGENTNET_MODEL_DIR` | Protocol | Trade-off |
 |---|---|---|---|
-| **Low false positives** (the default) | `combined_strat80fix_t057` | stratified 7-source + qualifire | 7-source test: accuracy 0.9832, FPR 0.0059, FNR 0.0277; qualifire unseen 980: accuracy 0.8765, FPR 0.0826, FNR 0.1830; 8/8 short, 0/4 benign, 8/8 evasions |
+| **Balanced** (the default) | `combined_strat80fix_t050` | stratified 7-source + qualifire | 7-source test: accuracy 0.9869, FPR 0.0079, FNR 0.0183; qualifire unseen 980: accuracy 0.8704, FPR 0.1291, FNR 0.1303; 8/8 short, 0/4 benign, 8/8 evasions |
+| Low false positives | `combined_strat80fix_t057` | stratified 7-source + qualifire | 7-source test: accuracy 0.9832, FPR 0.0059, FNR 0.0277; qualifire unseen 980: accuracy 0.8765, FPR 0.0826, FNR 0.1830; 8/8 short, 0/4 benign, 8/8 evasions |
 | In-domain accuracy (previous default) | `combined_indomain_v14` | in-domain | accuracy 0.9240, FPR 0.0768, FNR 0.0748, AUC 0.9807; 8/8 short, 8/8 evasions, 1/4 benign controls |
 | **Generalisation** | `combined_mean_v13` | cross-source | accuracy 0.7212, FPR 0.3884, FNR 0.1148, AUC 0.8173; 8/8 short, 0/4 benign, 8/8 evasions |
 | Previous default | `combined_gated_v7` | cross-source | FPR 0.3961, FNR 0.1193; no multi-turn coverage (FPR 0.495 on benign conversations) |
 | Maximum security | `combined_max_v7` | cross-source | ASR 0.025, FNR 0.029, same coverage; FPR 0.415 |
 | Comparable with prior work | `v3` | cross-source | Misses the dilution evasion, FPR 0.405 |
 
-`combined_strat80fix_t057` is `mean(strat80fix_ensemble,
-strat80fix_distilbert, strat80fix_tfidf)` with operating point 0.571 folded
-into the score. The members were retrained on a deduplicated 80% of the
+`combined_strat80fix_t050` and `combined_strat80fix_t057` are both
+`mean(strat80fix_ensemble, strat80fix_distilbert, strat80fix_tfidf)`; they
+differ only in the operating point folded into the score, 0.50 and 0.571.
+0.571 halves false alarms but roughly doubles misses; 0.50 sits between it
+and the validation cut (0.426) and leaves qualifire FPR and FNR nearly
+equal (0.129 / 0.130 on the unseen rows), so it is the default. The members were retrained on a deduplicated 80% of the
 331k seven-source corpus (`consolidated_v4.csv`), stratified on label ×
 source, with imoxto relabelled: it is HackAPrompt data whose label meant
 "the attack succeeded", so failed attacks had been labelled benign. Every
@@ -766,7 +770,7 @@ foreach ($m in "ensemble", "distilbert", "tfidf") {                             
   .\.venv\Scripts\python.exe scripts\train_strat_split.py $m $W\strat80_flipall $M\strat80fix_$m }
 .\.venv\Scripts\python.exe scripts\eval_strat_split.py $W\strat80_flipall $W\strat80fix_eval.json strat80fix
 .\.venv\Scripts\python.exe scripts\tune_qualifire_threshold.py $W                          # cross-fitted qualifire cut
-.\.venv\Scripts\python.exe scripts\assemble_strat80fix.py $W                               # writes combined_strat80fix_t057
+.\.venv\Scripts\python.exe scripts\assemble_strat80fix.py $W                               # writes combined_strat80fix_t050
 ```
 
 Run each training command on its own rather than chained with `&&`: on

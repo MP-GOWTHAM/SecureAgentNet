@@ -1,8 +1,9 @@
 """Assemble a strat80fix combined checkpoint and verify it through the real load path.
 
-Default (the web-app default): combined_strat80fix_t057 =
+Default (the web-app default): combined_strat80fix_t050 =
 mean(strat80fix_ensemble, strat80fix_distilbert, strat80fix_tfidf) with the
-qualifire-tuned operating point 0.571 folded into the score, so the
+operating point 0.50 folded into the score (0.571, tuned for qualifire, is
+the low-false-alarm alternative: pass NAME combined_strat80fix_t057 THRESHOLD 0.571), so the
 standard 0.5 cut downstream IS the new threshold.
 
 Dropping TF-IDF was measured and rejected:
@@ -35,8 +36,8 @@ from probe_short_attacks import FILLER, SHORT_ATTACKS, SHORT_BENIGN
 
 SP = Path(sys.argv[1])
 MODELS = REPO / "secureagentnet" / "data" / "models"
-NAME = sys.argv[2] if len(sys.argv) > 2 else "combined_strat80fix_t057"
-THRESHOLD = float(sys.argv[3]) if len(sys.argv) > 3 else 0.571
+NAME = sys.argv[2] if len(sys.argv) > 2 else "combined_strat80fix_t050"
+THRESHOLD = float(sys.argv[3]) if len(sys.argv) > 3 else 0.50
 MEMBERS = sys.argv[4:] or ["strat80fix_ensemble", "strat80fix_distilbert", "strat80fix_tfidf"]
 
 cfg = CombinedRiskModelConfig(members=MEMBERS, mode="mean", decision_threshold=THRESHOLD)
